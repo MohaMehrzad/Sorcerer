@@ -33,6 +33,12 @@ yarn-error.log*
 # env files (can opt-in for committing if needed)
 .env*
 
+# code execution temp files
+.tmp/
+
+# sorcerer local runtime state and generated skills
+.sorcerer/
+
 # vercel
 .vercel
 

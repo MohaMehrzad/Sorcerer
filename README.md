@@ -1,36 +1,115 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# Sorcerer Autonomous Programming Agent
 
-## Getting Started
+Sorcerer is a local, workspace-first autonomous coding app built with Next.js.
 
-First, run the development server:
+It provides:
+- Multi-workspace local operation
+- Bot onboarding (name, API key, model URL/model, workspace)
+- Global reusable skills
+- Autonomous plan/act/verify runs with live streaming status
+- Project intelligence and clarification-first execution
+- Run checkpoints/resume + rollback-on-failure controls
+
+## Requirements
+
+- Node.js 20+
+- `pnpm`
+- Python 3 (only for web search helper)
+- Python package `ddgs` for search helper: `pip install ddgs`
+
+## Quick Start
 
 ```bash
-npm run dev
-# or
-yarn dev
-# or
+pnpm install
 pnpm dev
-# or
-bun dev
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+Open: [http://localhost:7777](http://localhost:7777)
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+## Environment Variables
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+Create `.env.local` in the project root:
 
-## Learn More
+```bash
+MODEL_API_KEY=your_api_key
 
-To learn more about Next.js, take a look at the following resources:
+# Optional
+# MODEL_API_URL=https://api.viwoapp.net/v1/chat/completions
+# MODEL_NAME=qwen3:30b-128k
+# WORKSPACE_DIR=/absolute/path/to/workspace
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+# Reliability tuning (optional)
+# MODEL_API_MAX_RETRIES=2
+# MODEL_API_REQUEST_TIMEOUT_MS=20000
+```
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+Notes:
+- `MODEL_API_KEY` is required unless you supply key/url/model in onboarding UI.
+- `WORKSPACE_DIR` defaults to the repository root when omitted.
 
-## Deploy on Vercel
+## Workspaces
 
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
+- Left sidebar lists local workspaces.
+- `New Workspace` opens native picker (macOS/Windows) to select folder/file.
+- Agent always runs against currently selected workspace path.
 
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+## Global Skills
+
+Skills are global to Sorcerer (not per workspace):
+
+- Storage path: `./.sorcerer/skills`
+- Create skills from prompt in Bot Setup.
+- Enable/disable skill files for autonomous runs.
+- Legacy workspace skill files are auto-migrated into global skill storage when listing/creating.
+
+## Autonomous Runs
+
+Start a run from the main panel by entering a goal and pressing `Start Autonomous Run`.
+
+Main controls:
+- Max iterations
+- Team size (1-100)
+- Clarification-before-edits gate
+- Preflight checks
+- Strict verification and auto-fix loop
+- Dry run and rollback on failure
+- File-write and command-run budgets
+
+Live run output includes:
+- Status updates
+- Step log
+- Verification checks
+- Accessed/edited files
+- Recent runs summary
+
+## Reliability Behavior
+
+- Model calls retry on transient failures (408/429/5xx).
+- Request timeout and retry count are configurable by env vars.
+- Heartbeat statuses are emitted while waiting for model responses.
+- Failed/stale checkpoints are not auto-resumed.
+- Invalid model action JSON falls back to a safe discovery action instead of crashing.
+
+## Run Persistence
+
+Run state and checkpoints are stored locally:
+
+- `./.tmp/agent-runs/<runId>/meta.json`
+- `./.tmp/agent-runs/<runId>/checkpoint.json`
+- `./.tmp/agent-runs/<runId>/events.ndjson`
+
+## API Routes
+
+- `POST /api/agent`
+- `POST /api/agent/stream`
+- `POST /api/files`
+- `POST /api/execute`
+- `POST /api/search`
+- `POST /api/chat`
+- `POST /api/skills`
+- `POST /api/workspace/pick`
+- `GET /api/intelligence`
+
+## Security Notice
+
+Sorcerer can read/write files and run local commands in selected workspaces. Use only in trusted local environments unless you add authentication, stronger sandboxing, and tighter command controls.
