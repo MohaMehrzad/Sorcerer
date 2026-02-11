@@ -31,16 +31,16 @@ Open: [http://localhost:7777](http://localhost:7777)
 Create `.env.local` in the project root:
 
 ```bash
-MODEL_API_KEY=your_api_key
+MODEL_API_KEY=<your_model_api_key>
 
 # Optional
-# MODEL_API_URL=https://api.viwoapp.net/v1/chat/completions
-# MODEL_NAME=qwen3:30b-128k
-# WORKSPACE_DIR=/absolute/path/to/workspace
+# MODEL_API_URL=<your_model_api_url>
+# MODEL_NAME=<your_model_name>
+# WORKSPACE_DIR=<absolute_path_to_workspace>
 
 # Reliability tuning (optional)
-# MODEL_API_MAX_RETRIES=2
-# MODEL_API_REQUEST_TIMEOUT_MS=20000
+# MODEL_API_MAX_RETRIES=<retry_count>
+# MODEL_API_REQUEST_TIMEOUT_MS=<timeout_ms>
 ```
 
 Notes:
