@@ -4,6 +4,7 @@ import { promisify } from "util";
 import { writeFile, unlink, mkdir } from "fs/promises";
 import path from "path";
 import crypto from "crypto";
+import { buildCorsHeaders, enforceApiAccess } from "@/lib/server/accessGuard";
 
 const execFileAsync = promisify(execFile);
 const execAsync = promisify(exec);
@@ -93,6 +94,41 @@ function truncate(str: string, max: number): string {
   return str.slice(0, max) + `\n... (truncated, ${str.length} total chars)`;
 }
 
+function buildExecutionEnv(): NodeJS.ProcessEnv {
+  const allowedKeys = [
+    "PATH",
+    "HOME",
+    "LANG",
+    "LC_ALL",
+    "LC_CTYPE",
+    "TMPDIR",
+    "TMP",
+    "TEMP",
+    "SYSTEMROOT",
+    "WINDIR",
+    "PATHEXT",
+    "ComSpec",
+  ] as const;
+
+  const env: NodeJS.ProcessEnv = {
+    NODE_ENV: process.env.NODE_ENV || "production",
+    PYTHONUNBUFFERED: "1",
+  };
+
+  for (const key of allowedKeys) {
+    const value = process.env[key];
+    if (typeof value === "string" && value.length > 0) {
+      env[key] = value;
+    }
+  }
+
+  return env;
+}
+
+function corsHeaders(req: NextRequest): Record<string, string> {
+  return buildCorsHeaders(req, "POST, OPTIONS");
+}
+
 async function runInterpreted(
   config: InterpretedLang,
   filePath: string
@@ -102,7 +138,7 @@ async function runInterpreted(
     const { stdout, stderr } = await execFileAsync(config.cmd, args, {
       timeout: TIMEOUT,
       maxBuffer: MAX_OUTPUT,
-      env: { ...process.env, PYTHONUNBUFFERED: "1" },
+      env: buildExecutionEnv(),
     });
     const output = (stdout || "") + (stderr ? stderr : "");
     return { output: truncate(output, MAX_OUTPUT) || "(no output)", exitCode: 0 };
@@ -144,7 +180,11 @@ async function runCompiled(
     // Compile
     const compileCmd = config.compile(filePath, outPath);
     try {
-      await execAsync(compileCmd, { timeout: TIMEOUT, maxBuffer: MAX_OUTPUT });
+      await execAsync(compileCmd, {
+        timeout: TIMEOUT,
+        maxBuffer: MAX_OUTPUT,
+        env: buildExecutionEnv(),
+      });
     } catch (err: unknown) {
       const e = err as { stderr?: string; message?: string };
       return {
@@ -158,6 +198,7 @@ async function runCompiled(
       const { stdout, stderr } = await execFileAsync(outPath, [], {
         timeout: TIMEOUT,
         maxBuffer: MAX_OUTPUT,
+        env: buildExecutionEnv(),
       });
       const output = (stdout || "") + (stderr ? stderr : "");
       return {
@@ -214,6 +255,7 @@ async function runJava(
       await execAsync(`javac "${javaPath}"`, {
         timeout: TIMEOUT,
         maxBuffer: MAX_OUTPUT,
+        env: buildExecutionEnv(),
       });
     } catch (err: unknown) {
       const e = err as { stderr?: string; message?: string };
@@ -227,7 +269,11 @@ async function runJava(
     try {
       const { stdout, stderr } = await execAsync(
         `java -cp "${tmpDir}" ${className}`,
-        { timeout: TIMEOUT, maxBuffer: MAX_OUTPUT }
+        {
+          timeout: TIMEOUT,
+          maxBuffer: MAX_OUTPUT,
+          env: buildExecutionEnv(),
+        }
       );
       const output = (stdout || "") + (stderr ? stderr : "");
       return {
@@ -260,16 +306,28 @@ async function runJava(
 }
 
 export async function POST(req: NextRequest) {
+  const denied = enforceApiAccess(req, {
+    includeCorsHeaders: true,
+    methods: "POST, OPTIONS",
+  });
+  if (denied) return denied;
+
   let body: { code?: string; language?: string };
   try {
     body = await req.json();
   } catch {
-    return NextResponse.json({ error: "Invalid JSON" }, { status: 400 });
+    return NextResponse.json(
+      { error: "Invalid JSON" },
+      { status: 400, headers: corsHeaders(req) }
+    );
   }
 
   const { code, language } = body;
   if (!code?.trim()) {
-    return NextResponse.json({ error: "No code provided" }, { status: 400 });
+    return NextResponse.json(
+      { error: "No code provided" },
+      { status: 400, headers: corsHeaders(req) }
+    );
   }
 
   const lang = (language || "python").toLowerCase();
@@ -282,7 +340,7 @@ export async function POST(req: NextRequest) {
       {
         error: `Unsupported language: ${lang}. Supported: ${supported.join(", ")}`,
       },
-      { status: 400 }
+      { status: 400, headers: corsHeaders(req) }
     );
   }
 
@@ -295,19 +353,28 @@ export async function POST(req: NextRequest) {
     await writeFile(filePath, code, "utf-8");
 
     if (config.type === "interpreted") {
-      return NextResponse.json(await runInterpreted(config, filePath));
+      return NextResponse.json(await runInterpreted(config, filePath), {
+        headers: corsHeaders(req),
+      });
     } else {
-      return NextResponse.json(
-        await runCompiled(config, filePath, tmpDir, fileId)
-      );
+      return NextResponse.json(await runCompiled(config, filePath, tmpDir, fileId), {
+        headers: corsHeaders(req),
+      });
     }
   } catch (err: unknown) {
     const e = err as { message?: string };
     return NextResponse.json(
       { output: e.message || "Execution failed", exitCode: 1 },
-      { status: 500 }
+      { status: 500, headers: corsHeaders(req) }
     );
   } finally {
     unlink(filePath).catch(() => {});
   }
+}
+
+export async function OPTIONS(req: NextRequest) {
+  return new NextResponse(null, {
+    status: 204,
+    headers: corsHeaders(req),
+  });
 }

@@ -2,6 +2,7 @@
 
 import { FormEvent, useCallback, useEffect, useState } from "react";
 import type { BotProfile } from "@/lib/store";
+import { apiFetch } from "@/lib/client/apiFetch";
 
 const DEFAULT_API_URL = "https://api.viwoapp.net/v1/chat/completions";
 const DEFAULT_MODEL = "qwen3:30b-128k";
@@ -59,7 +60,7 @@ export default function BotOnboarding({
     setSkillsLoading(true);
     setSkillsError(null);
     try {
-      const response = await fetch("/api/skills", {
+      const response = await apiFetch("/api/skills", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -105,7 +106,7 @@ export default function BotOnboarding({
     setSkillActionSuccess(null);
 
     try {
-      const response = await fetch("/api/skills", {
+      const response = await apiFetch("/api/skills", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -263,6 +264,9 @@ export default function BotOnboarding({
                 placeholder="sk-..."
                 className="w-full rounded-lg border border-neutral-300 dark:border-neutral-700 bg-white dark:bg-neutral-900 px-3 py-2 font-mono"
               />
+              <span className="mt-1 block text-[11px] text-neutral-500">
+                Stored only for this browser session (clears on close).
+              </span>
             </label>
 
             <label className="block text-sm">

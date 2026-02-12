@@ -5,6 +5,7 @@ import {
   parseModelConfigInput,
   requestModel,
 } from "@/lib/server/model";
+import { buildCorsHeaders, enforceApiAccess } from "@/lib/server/accessGuard";
 
 export const maxDuration = 120;
 
@@ -17,6 +18,17 @@ interface SearchResult {
 interface IncomingMessage {
   role?: unknown;
   content?: unknown;
+}
+
+function corsHeaders(req: NextRequest): Record<string, string> {
+  return buildCorsHeaders(req, "POST, OPTIONS");
+}
+
+export async function OPTIONS(req: NextRequest) {
+  return new NextResponse(null, {
+    status: 204,
+    headers: corsHeaders(req),
+  });
 }
 
 function getDateString(): string {
@@ -149,11 +161,69 @@ function normalizeMessages(input: unknown): ModelMessage[] {
   return normalized;
 }
 
+function parseOptionalCodebaseSummary(input: unknown): string {
+  if (input === undefined || input === null) {
+    return "";
+  }
+  if (typeof input !== "string") {
+    throw new Error("codebaseSummary must be a string");
+  }
+  return input.trim();
+}
+
+function parseSearchResults(input: unknown): SearchResult[] {
+  if (input === undefined || input === null) {
+    return [];
+  }
+  if (!Array.isArray(input)) {
+    throw new Error("searchResults must be an array");
+  }
+
+  const normalized: SearchResult[] = [];
+  for (let index = 0; index < input.length; index += 1) {
+    const item = input[index];
+    if (!item || typeof item !== "object") {
+      continue;
+    }
+
+    const typed = item as {
+      title?: unknown;
+      url?: unknown;
+      snippet?: unknown;
+    };
+
+    if (
+      typeof typed.title !== "string" ||
+      typeof typed.url !== "string" ||
+      typeof typed.snippet !== "string"
+    ) {
+      continue;
+    }
+
+    const title = typed.title.trim();
+    const url = typed.url.trim();
+    const snippet = typed.snippet.trim();
+    if (!title || !url || !snippet) {
+      continue;
+    }
+
+    normalized.push({ title, url, snippet });
+  }
+
+  return normalized;
+}
+
 export async function POST(req: NextRequest) {
+  const denied = enforceApiAccess(req, {
+    includeCorsHeaders: true,
+    methods: "POST, OPTIONS",
+  });
+  if (denied) return denied;
+
   let body: {
     messages?: unknown;
-    searchResults?: SearchResult[];
-    codebaseSummary?: string;
+    searchResults?: unknown;
+    codebaseSummary?: unknown;
     botName?: unknown;
     botContext?: unknown;
     modelConfig?: unknown;
@@ -164,19 +234,23 @@ export async function POST(req: NextRequest) {
   } catch {
     return NextResponse.json(
       { error: "Invalid JSON in request body" },
-      { status: 400 }
+      { status: 400, headers: corsHeaders(req) }
     );
   }
 
   let messages: ModelMessage[];
   let modelConfig: Partial<ModelConfig> | undefined;
+  let codebaseSummary = "";
+  let searchResults: SearchResult[] = [];
   try {
     messages = normalizeMessages(body.messages);
     modelConfig = parseModelConfigInput(body.modelConfig);
+    codebaseSummary = parseOptionalCodebaseSummary(body.codebaseSummary);
+    searchResults = parseSearchResults(body.searchResults);
   } catch (err) {
     return NextResponse.json(
       { error: err instanceof Error ? err.message : "Invalid request body" },
-      { status: 400 }
+      { status: 400, headers: corsHeaders(req) }
     );
   }
 
@@ -190,8 +264,8 @@ export async function POST(req: NextRequest) {
   const today = getDateString();
   let systemContent = buildSystemPrompt(today, botName, botContext);
 
-  if (body.codebaseSummary && body.codebaseSummary.trim().length > 0) {
-    systemContent += `\n\n# Current Project Context\nThe user's project structure:\n${body.codebaseSummary}`;
+  if (codebaseSummary.length > 0) {
+    systemContent += `\n\n# Current Project Context\nThe user's project structure:\n${codebaseSummary}`;
   }
 
   const finalMessages: ModelMessage[] = [
@@ -202,10 +276,10 @@ export async function POST(req: NextRequest) {
     ...messages,
   ];
 
-  if (body.searchResults && body.searchResults.length > 0) {
+  if (searchResults.length > 0) {
     const contextMessage: ModelMessage = {
       role: "user",
-      content: buildSearchContext(body.searchResults, today),
+      content: buildSearchContext(searchResults, today),
     };
 
     const reminderMessage: ModelMessage = {
@@ -227,12 +301,13 @@ export async function POST(req: NextRequest) {
       const errorText = await response.text().catch(() => "Unknown error");
       return NextResponse.json(
         { error: `Model API error ${response.status}: ${errorText}` },
-        { status: response.status }
+        { status: response.status, headers: corsHeaders(req) }
       );
     }
 
     return new Response(response.body, {
       headers: {
+        ...corsHeaders(req),
         "Content-Type": "text/event-stream",
         "Cache-Control": "no-cache, no-transform",
         Connection: "keep-alive",
@@ -243,7 +318,7 @@ export async function POST(req: NextRequest) {
     const message = err instanceof Error ? err.message : "Failed to reach model API";
     return NextResponse.json(
       { error: `Connection error: ${message}` },
-      { status: 502 }
+      { status: 502, headers: corsHeaders(req) }
     );
   }
 }

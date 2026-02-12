@@ -4,6 +4,7 @@ import { useEffect, useMemo, useState } from "react";
 import Sidebar from "@/components/Sidebar";
 import AutonomousPanel from "@/components/AutonomousPanel";
 import BotOnboarding from "@/components/BotOnboarding";
+import { apiFetch } from "@/lib/client/apiFetch";
 import {
   BotProfile,
   WorkspaceEntry,
@@ -70,6 +71,20 @@ export default function Home() {
 
   const activeWorkspacePath = activeWorkspace?.path || botProfile?.workspacePath || ".";
 
+  useEffect(() => {
+    if (!hydrated || !activeWorkspacePath) return;
+
+    apiFetch("/api/workspace/pick", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ workspacePath: activeWorkspacePath }),
+    }).catch(() => {
+      // Workspace registration is best-effort.
+    });
+  }, [activeWorkspacePath, hydrated]);
+
   function openOnboarding(initial: BotProfile | null) {
     setOnboardingSeed(initial);
     setOnboardingKey((value) => value + 1);
@@ -100,7 +115,7 @@ export default function Home() {
     setWorkspacePickerError(null);
 
     try {
-      const response = await fetch("/api/workspace/pick", {
+      const response = await apiFetch("/api/workspace/pick", {
         method: "POST",
         headers: {
           "Content-Type": "application/json",

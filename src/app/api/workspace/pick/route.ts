@@ -1,8 +1,14 @@
-import { NextResponse } from "next/server";
+import { NextRequest, NextResponse } from "next/server";
 import { execFile } from "child_process";
 import { promisify } from "util";
 import { stat } from "fs/promises";
 import path from "path";
+import {
+  approveWorkspacePath,
+  resolveWorkspacePath,
+  statusFromWorkspaceError,
+} from "@/lib/server/workspace";
+import { buildCorsHeaders, enforceApiAccess } from "@/lib/server/accessGuard";
 
 const execFileAsync = promisify(execFile);
 
@@ -11,6 +17,7 @@ interface PickerResponse {
   selectedPath?: string;
   selectedType?: "file" | "directory";
   workspacePath?: string;
+  registered?: boolean;
 }
 
 async function pickPathOnMac(): Promise<string> {
@@ -93,30 +100,77 @@ async function pickPath(): Promise<string> {
   throw new Error("Native workspace picker is currently supported on macOS and Windows.");
 }
 
-export async function POST() {
+function corsHeaders(req: NextRequest): Record<string, string> {
+  return buildCorsHeaders(req, "POST, OPTIONS");
+}
+
+export async function OPTIONS(req: NextRequest) {
+  return new NextResponse(null, {
+    status: 204,
+    headers: corsHeaders(req),
+  });
+}
+
+async function parseJsonBody(req: NextRequest): Promise<{ workspacePath?: unknown }> {
   try {
+    return (await req.json()) as { workspacePath?: unknown };
+  } catch {
+    return {};
+  }
+}
+
+export async function POST(req: NextRequest) {
+  const denied = enforceApiAccess(req, {
+    includeCorsHeaders: true,
+    methods: "POST, OPTIONS",
+  });
+  if (denied) return denied;
+
+  try {
+    const body = await parseJsonBody(req);
+    const requestedWorkspace =
+      typeof body.workspacePath === "string" ? body.workspacePath.trim() : "";
+    if (requestedWorkspace) {
+      const resolvedWorkspacePath = await resolveWorkspacePath(requestedWorkspace);
+      return NextResponse.json<PickerResponse>(
+        {
+          canceled: false,
+          selectedPath: resolvedWorkspacePath,
+          selectedType: "directory",
+          workspacePath: resolvedWorkspacePath,
+          registered: true,
+        },
+        { headers: corsHeaders(req) }
+      );
+    }
+
     const selectedPath = await pickPath();
 
     if (!selectedPath) {
       return NextResponse.json<PickerResponse>({
         canceled: true,
-      });
+      }, { headers: corsHeaders(req) });
     }
 
     const fileStat = await stat(selectedPath);
     const selectedType = fileStat.isDirectory() ? "directory" : "file";
     const workspacePath =
       selectedType === "directory" ? selectedPath : path.dirname(selectedPath);
+    const approvedWorkspacePath = await approveWorkspacePath(workspacePath);
 
     return NextResponse.json<PickerResponse>({
       canceled: false,
       selectedPath,
       selectedType,
-      workspacePath,
-    });
+      workspacePath: approvedWorkspacePath,
+    }, { headers: corsHeaders(req) });
   } catch (err) {
     const message =
       err instanceof Error ? err.message : "Failed to open workspace picker";
-    return NextResponse.json({ error: message }, { status: 500 });
+    const status = statusFromWorkspaceError(err) ?? 500;
+    return NextResponse.json(
+      { error: message },
+      { status, headers: corsHeaders(req) }
+    );
   }
 }

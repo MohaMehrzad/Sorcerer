@@ -1248,7 +1248,9 @@ function isRetryableModelError(err: unknown): boolean {
     /Model API (?:error|timeout) \((408|429|5\d{2})\)/i.test(message) ||
     /Model API error (408|429|5\d{2})/i.test(message) ||
     /Model request timeout/i.test(message) ||
-    /Connection error/i.test(message)
+    /Model completion body timeout/i.test(message) ||
+    /Connection error/i.test(message) ||
+    /timed?\s*out/i.test(message)
   );
 }
 
@@ -2303,6 +2305,19 @@ async function runCommand(
   context.commandRunCount += 1;
   context.commandsRun.push(commandString);
 
+  // The API runs inside `next dev`, so inherited NODE_ENV=development breaks `next build`.
+  const inheritedNodeEnv = process.env.NODE_ENV;
+  const commandNodeEnv =
+    inheritedNodeEnv && ["production", "test"].includes(inheritedNodeEnv)
+      ? inheritedNodeEnv
+      : "production";
+  const commandEnv: NodeJS.ProcessEnv = {
+    ...process.env,
+    NODE_ENV: commandNodeEnv,
+    CI: "1",
+    FORCE_COLOR: "0",
+  };
+
   try {
     const { stdout, stderr } = await execFileAsync(
       normalized.program,
@@ -2311,11 +2326,7 @@ async function runCommand(
         cwd: execCwd,
         timeout: COMMAND_TIMEOUT_MS,
         maxBuffer: MAX_COMMAND_BUFFER,
-        env: {
-          ...process.env,
-          CI: "1",
-          FORCE_COLOR: "0",
-        },
+        env: commandEnv,
       }
     );
 
@@ -2827,6 +2838,12 @@ function isMutationAction(action: AgentAction): boolean {
   );
 }
 
+function goalLikelyRequiresCodeMutation(goal: string): boolean {
+  return /(?:create|write|implement|build|fix|refactor|add|generate|code|project|file|backend|frontend)/i.test(
+    goal
+  );
+}
+
 function isEvidenceAction(action: AgentAction): boolean {
   return (
     action.type === "read_file" ||
@@ -3157,6 +3174,11 @@ function finalizeResult(
     projectIntelligence: ProjectIntelligence;
   }
 ): AgentRunResult {
+  const highestIteration = params.steps.reduce(
+    (max, step) => Math.max(max, step.iteration),
+    0
+  );
+  const iterationsUsed = Math.min(base.maxIterations, highestIteration);
   const hasHighRiskSignals = params.projectIntelligence.signals.some(
     (signal) => signal.severity === "high" && signal.count > 0
   );
@@ -3175,7 +3197,7 @@ function finalizeResult(
     verification: params.verification,
     remainingWork: params.remainingWork,
     finishedAt: new Date().toISOString(),
-    iterationsUsed: params.steps.length,
+    iterationsUsed,
     verificationPassed: params.verificationPassed,
     verificationAttempts: params.verificationAttempts,
     verificationChecks: params.verificationChecks,
@@ -3800,6 +3822,38 @@ export async function runAutonomousAgent(
         droppedMessages: contextDiagnostics.droppedMessages,
         tokenEstimate: contextDiagnostics.tokenEstimate,
       });
+
+      if (
+        decision.action.type === "final" &&
+        !request.dryRun &&
+        goalLikelyRequiresCodeMutation(request.goal) &&
+        toolContext.fileWriteCount === 0
+      ) {
+        const guardMessage =
+          "Finalization rejected: this goal requires code/file changes, but no file mutations have been applied yet.";
+        const guardStep: AgentStep = {
+          iteration,
+          phase: "action",
+          thinking: decision.thinking,
+          action: decision.action,
+          ok: false,
+          summary: "Premature final blocked before any file writes",
+          output: guardMessage,
+          durationMs: Date.now() - iterationStarted,
+        };
+        steps.push(guardStep);
+        emit(hooks, { type: "step", data: { step: guardStep } });
+        history.push({
+          role: "user",
+          content:
+            "Do not finalize yet. Perform at least one concrete file mutation (write/append/delete) that advances the goal, then continue.",
+        });
+        await safeAppendEvent("final_blocked_no_mutation", {
+          iteration,
+          goal: request.goal,
+        });
+        continue;
+      }
 
       if (decision.action.type === "final") {
         finalSummary = decision.action.summary;

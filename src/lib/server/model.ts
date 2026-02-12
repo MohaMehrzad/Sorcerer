@@ -37,8 +37,8 @@ interface ModelRequestOptions {
 
 const DEFAULT_API_URL = "https://api.viwoapp.net/v1/chat/completions";
 const DEFAULT_MODEL = "qwen3:30b-128k";
-const DEFAULT_MAX_REQUEST_ATTEMPTS = 2;
-const MIN_REQUEST_ATTEMPTS = 1;
+const DEFAULT_MAX_REQUEST_ATTEMPTS = 3;
+const MIN_REQUEST_ATTEMPTS = 2;
 const MAX_REQUEST_ATTEMPTS = 6;
 const DEFAULT_MODEL_REQUEST_TIMEOUT_MS = 20000;
 const MIN_MODEL_REQUEST_TIMEOUT_MS = 8000;
@@ -48,13 +48,35 @@ const MIN_COMPLETION_BODY_TIMEOUT_MS = 10000;
 const MAX_COMPLETION_BODY_TIMEOUT_MS = 300000;
 const MAX_ERROR_BODY_CHARS = 1800;
 
+function normalizeApiUrl(rawUrl: string): string {
+  let parsed: URL;
+  try {
+    parsed = new URL(rawUrl);
+  } catch {
+    throw new Error("Model API URL must be a valid absolute URL");
+  }
+
+  if (parsed.protocol !== "https:" && parsed.protocol !== "http:") {
+    throw new Error("Model API URL must use http:// or https://");
+  }
+
+  if (!parsed.hostname) {
+    throw new Error("Model API URL must include a hostname");
+  }
+
+  return parsed.toString();
+}
+
 export function getModelConfig(): ModelConfig {
+  const configuredApiUrl =
+    process.env.MODEL_API_URL ||
+    process.env.CHAT_API_URL ||
+    process.env.VIWO_API_URL ||
+    DEFAULT_API_URL;
+  const apiUrl = normalizeApiUrl(configuredApiUrl);
+
   return {
-    apiUrl:
-      process.env.MODEL_API_URL ||
-      process.env.CHAT_API_URL ||
-      process.env.VIWO_API_URL ||
-      DEFAULT_API_URL,
+    apiUrl,
     apiKey:
       process.env.MODEL_API_KEY ||
       process.env.CHAT_API_KEY ||
@@ -101,7 +123,13 @@ export function parseModelConfigInput(value: unknown): Partial<ModelConfig> | un
   const apiKey = normalizeString(input.apiKey);
   const model = normalizeString(input.model);
 
-  if (apiUrl) parsed.apiUrl = apiUrl;
+  if (apiUrl && !apiKey) {
+    throw new Error(
+      "modelConfig.apiUrl override requires modelConfig.apiKey in the same request."
+    );
+  }
+
+  if (apiUrl) parsed.apiUrl = normalizeApiUrl(apiUrl);
   if (apiKey) parsed.apiKey = apiKey;
   if (model) parsed.model = model;
 
@@ -110,9 +138,18 @@ export function parseModelConfigInput(value: unknown): Partial<ModelConfig> | un
 
 export function resolveModelConfig(override?: Partial<ModelConfig>): ModelConfig {
   const base = getModelConfig();
+  const overrideApiUrl = normalizeString(override?.apiUrl);
+  const overrideApiKey = normalizeString(override?.apiKey);
+
+  if (overrideApiUrl && !overrideApiKey) {
+    throw new Error(
+      "modelConfig.apiUrl override requires modelConfig.apiKey in the same request."
+    );
+  }
+
   return {
-    apiUrl: normalizeString(override?.apiUrl) || base.apiUrl,
-    apiKey: normalizeString(override?.apiKey) || base.apiKey,
+    apiUrl: overrideApiUrl ? normalizeApiUrl(overrideApiUrl) : base.apiUrl,
+    apiKey: overrideApiKey || base.apiKey,
     model: normalizeString(override?.model) || base.model,
   };
 }

@@ -62,6 +62,7 @@ const PATCH_HUNK_MAX_CHARS = 18000;
 const FLAKY_TEST_MAX_RETRIES = 2;
 const LOW_CONFIDENCE_ESCALATION_THRESHOLD = 0.55;
 const CRITIC_REVIEW_ESCALATION_WINDOW = 0.08;
+const CRITIC_FLOOR_ON_FINAL_ATTEMPT = 0.45;
 
 const IGNORE = new Set([
   "node_modules",
@@ -1174,6 +1175,19 @@ async function runCommand(
   context.commandRunCount += 1;
   context.commandsRun.push(commandString);
 
+  // The API runs inside `next dev`, so inherited NODE_ENV=development breaks `next build`.
+  const inheritedNodeEnv = process.env.NODE_ENV;
+  const commandNodeEnv =
+    inheritedNodeEnv && ["production", "test"].includes(inheritedNodeEnv)
+      ? inheritedNodeEnv
+      : "production";
+  const commandEnv: NodeJS.ProcessEnv = {
+    ...process.env,
+    NODE_ENV: commandNodeEnv,
+    CI: "1",
+    FORCE_COLOR: "0",
+  };
+
   const startedAt = Date.now();
   try {
     const { stdout, stderr } = await execFileAsync(
@@ -1183,11 +1197,7 @@ async function runCommand(
         cwd,
         timeout: COMMAND_TIMEOUT_MS,
         maxBuffer: MAX_COMMAND_BUFFER,
-        env: {
-          ...process.env,
-          CI: "1",
-          FORCE_COLOR: "0",
-        },
+        env: commandEnv,
         signal,
       }
     );
@@ -2753,6 +2763,11 @@ function buildCompletionResult(params: {
   error?: string;
   multiAgent: MultiAgentRunSummary;
 }): AgentRunResult {
+  const highestIteration = params.steps.reduce(
+    (max, step) => Math.max(max, step.iteration),
+    0
+  );
+  const iterationsUsed = Math.min(params.maxIterations, highestIteration);
   return {
     status: params.status,
     runId: params.runId,
@@ -2762,7 +2777,7 @@ function buildCompletionResult(params: {
     finishedAt: new Date().toISOString(),
     model: params.model,
     maxIterations: params.maxIterations,
-    iterationsUsed: params.steps.length,
+    iterationsUsed,
     summary: params.summary,
     verification: params.verification,
     remainingWork: params.remainingWork,
@@ -3638,10 +3653,17 @@ export async function runMultiAgentAutonomous(
     state.criticScore = critic.score;
     state.blockingIssues = critic.blockingIssues;
 
+    const isFinalRetryForUnit = state.attempts >= DEFAULT_UNIT_MAX_ATTEMPTS;
+    const canProceedWithLowCriticScore =
+      critic.blockingIssues.length === 0 &&
+      critic.score >= CRITIC_FLOOR_ON_FINAL_ATTEMPT &&
+      coder.confidence >= 0.35 &&
+      isFinalRetryForUnit;
+
     if (
       critic.blockingIssues.length > 0 ||
-      critic.score < request.criticPassThreshold ||
-      coder.confidence < 0.35
+      coder.confidence < 0.35 ||
+      (critic.score < request.criticPassThreshold && !canProceedWithLowCriticScore)
     ) {
       const reasons: string[] = [];
       if (critic.blockingIssues.length > 0) {
@@ -3656,6 +3678,21 @@ export async function runMultiAgentAutonomous(
         reasons.push(`coder confidence too low (${coder.confidence.toFixed(2)})`);
       }
       throw new Error(`Critic gate failed: ${reasons.join(" | ")}`);
+    }
+
+    if (critic.score < request.criticPassThreshold && canProceedWithLowCriticScore) {
+      const warningStep = createStep({
+        iteration: iterationCounter,
+        phase: "action",
+        role: "Orchestrator",
+        summary:
+          "Critic score below threshold on final retry; proceeding to apply changes and rely on verification gates.",
+        output: `score=${critic.score.toFixed(2)} threshold=${request.criticPassThreshold.toFixed(2)} floor=${CRITIC_FLOOR_ON_FINAL_ATTEMPT.toFixed(2)}`,
+        ok: true,
+        durationMs: 0,
+      });
+      steps.push(warningStep);
+      emit(hooks, { type: "step", data: { step: warningStep } });
     }
 
     if (

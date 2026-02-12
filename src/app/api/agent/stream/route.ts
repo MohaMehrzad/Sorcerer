@@ -5,6 +5,7 @@ import {
   runAutonomousAgent,
 } from "@/lib/server/agentRunner";
 import { runMultiAgentAutonomous } from "@/lib/server/multiAgentRunner";
+import { buildCorsHeaders, enforceApiAccess } from "@/lib/server/accessGuard";
 
 export const maxDuration = 300;
 
@@ -12,35 +13,8 @@ function encodeEvent(event: AgentRunProgressEvent | { type: "completed" | "faile
   return new TextEncoder().encode(`${JSON.stringify(event)}\n`);
 }
 
-function normalizeConfiguredOrigins(value: string | undefined): string[] {
-  if (!value) return [];
-  return value
-    .split(",")
-    .map((item) => item.trim())
-    .filter((item) => item.length > 0);
-}
-
-function resolveCorsOrigin(req: NextRequest): string {
-  const requestOrigin = req.headers.get("origin")?.trim();
-  const configuredOrigins = normalizeConfiguredOrigins(process.env.CORS_ALLOWED_ORIGINS);
-  const defaultOrigins = ["http://127.0.0.1:7777", "http://localhost:7777"];
-  const allowedOrigins = configuredOrigins.length > 0 ? configuredOrigins : defaultOrigins;
-
-  if (requestOrigin && allowedOrigins.includes(requestOrigin)) {
-    return requestOrigin;
-  }
-
-  return allowedOrigins[0] || "*";
-}
-
 function corsHeaders(req: NextRequest): Record<string, string> {
-  return {
-    "Access-Control-Allow-Origin": resolveCorsOrigin(req),
-    "Access-Control-Allow-Methods": "POST, OPTIONS",
-    "Access-Control-Allow-Headers": "Content-Type, Authorization",
-    "Access-Control-Max-Age": "86400",
-    Vary: "Origin",
-  };
+  return buildCorsHeaders(req, "POST, OPTIONS");
 }
 
 export async function OPTIONS(req: NextRequest) {
@@ -51,6 +25,12 @@ export async function OPTIONS(req: NextRequest) {
 }
 
 export async function POST(req: NextRequest) {
+  const denied = enforceApiAccess(req, {
+    includeCorsHeaders: true,
+    methods: "POST, OPTIONS",
+  });
+  if (denied) return denied;
+
   let body: unknown;
 
   try {

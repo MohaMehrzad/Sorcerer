@@ -7,6 +7,7 @@ import {
   migrateWorkspaceSkillsToGlobal,
 } from "@/lib/server/skills";
 import { resolveWorkspacePath } from "@/lib/server/workspace";
+import { buildCorsHeaders, enforceApiAccess } from "@/lib/server/accessGuard";
 
 interface SkillsRequestBody {
   action?: unknown;
@@ -15,17 +16,40 @@ interface SkillsRequestBody {
   modelConfig?: unknown;
 }
 
+function corsHeaders(req: NextRequest): Record<string, string> {
+  return buildCorsHeaders(req, "POST, OPTIONS");
+}
+
+export async function OPTIONS(req: NextRequest) {
+  return new NextResponse(null, {
+    status: 204,
+    headers: corsHeaders(req),
+  });
+}
+
 export async function POST(req: NextRequest) {
+  const denied = enforceApiAccess(req, {
+    includeCorsHeaders: true,
+    methods: "POST, OPTIONS",
+  });
+  if (denied) return denied;
+
   let body: SkillsRequestBody;
   try {
     body = (await req.json()) as SkillsRequestBody;
   } catch {
-    return NextResponse.json({ error: "Invalid JSON body" }, { status: 400 });
+    return NextResponse.json(
+      { error: "Invalid JSON body" },
+      { status: 400, headers: corsHeaders(req) }
+    );
   }
 
   const action = typeof body.action === "string" ? body.action.trim() : "";
   if (!action) {
-    return NextResponse.json({ error: "action is required" }, { status: 400 });
+    return NextResponse.json(
+      { error: "action is required" },
+      { status: 400, headers: corsHeaders(req) }
+    );
   }
   const workspacePath =
     typeof body.workspacePath === "string" && body.workspacePath.trim().length > 0
@@ -53,17 +77,23 @@ export async function POST(req: NextRequest) {
         skillsRoot,
         migratedCount,
         skills,
-      });
+      }, { headers: corsHeaders(req) });
     } catch (err) {
       const message = err instanceof Error ? err.message : "Failed to list skills";
-      return NextResponse.json({ error: message }, { status: 500 });
+      return NextResponse.json(
+        { error: message },
+        { status: 500, headers: corsHeaders(req) }
+      );
     }
   }
 
   if (action === "create") {
     const prompt = typeof body.prompt === "string" ? body.prompt.trim() : "";
     if (!prompt) {
-      return NextResponse.json({ error: "prompt is required" }, { status: 400 });
+      return NextResponse.json(
+        { error: "prompt is required" },
+        { status: 400, headers: corsHeaders(req) }
+      );
     }
 
     let modelConfig;
@@ -72,7 +102,7 @@ export async function POST(req: NextRequest) {
     } catch (err) {
       return NextResponse.json(
         { error: err instanceof Error ? err.message : "Invalid modelConfig" },
-        { status: 400 }
+        { status: 400, headers: corsHeaders(req) }
       );
     }
 
@@ -90,15 +120,18 @@ export async function POST(req: NextRequest) {
         skillsRoot,
         created,
         skills,
-      });
+      }, { headers: corsHeaders(req) });
     } catch (err) {
       const message = err instanceof Error ? err.message : "Failed to create skill";
-      return NextResponse.json({ error: message }, { status: 500 });
+      return NextResponse.json(
+        { error: message },
+        { status: 500, headers: corsHeaders(req) }
+      );
     }
   }
 
   return NextResponse.json(
     { error: `Unknown action: ${action}` },
-    { status: 400 }
+    { status: 400, headers: corsHeaders(req) }
   );
 }

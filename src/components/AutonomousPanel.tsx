@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { apiFetch } from "@/lib/client/apiFetch";
 
 interface AgentCommand {
   program: string;
@@ -347,19 +348,19 @@ const MAX_HISTORY_ITEMS = 12;
 
 const DEFAULT_SETTINGS: AgentSettings = {
   executionMode: "multi",
-  maxIterations: 18,
+  maxIterations: 24,
   maxParallelWorkUnits: 3,
-  criticPassThreshold: 0.72,
+  criticPassThreshold: 0.62,
   teamSize: 8,
-  runPreflightChecks: true,
-  resumeFromLastCheckpoint: true,
+  runPreflightChecks: false,
+  resumeFromLastCheckpoint: false,
   requireClarificationBeforeEdits: false,
-  strictVerification: true,
+  strictVerification: false,
   autoFixVerification: true,
   dryRun: false,
-  rollbackOnFailure: true,
-  maxFileWrites: 24,
-  maxCommandRuns: 36,
+  rollbackOnFailure: false,
+  maxFileWrites: 40,
+  maxCommandRuns: 48,
   modelOverride: "",
   customVerificationCommands: "",
 };
@@ -620,7 +621,42 @@ function parseStoredJson<T>(raw: string | null, fallback: T): T {
 }
 
 function clamp(value: number, min: number, max: number): number {
+  if (!Number.isFinite(value)) {
+    return min;
+  }
   return Math.max(min, Math.min(max, Math.floor(value)));
+}
+
+function looksLikeMutationGoal(goal: string): boolean {
+  return /(?:create|write|implement|build|fix|refactor|add|generate|code|project|file|backend|frontend)/i.test(
+    goal
+  );
+}
+
+function normalizeAgentSettings(input: Partial<AgentSettings> | null | undefined): AgentSettings {
+  const merged = {
+    ...DEFAULT_SETTINGS,
+    ...(input || {}),
+  };
+
+  return {
+    executionMode: merged.executionMode === "single" ? "single" : "multi",
+    maxIterations: clamp(Number(merged.maxIterations), 2, 40),
+    maxParallelWorkUnits: clamp(Number(merged.maxParallelWorkUnits), 1, 8),
+    criticPassThreshold: Math.max(0.2, Math.min(0.95, Number(merged.criticPassThreshold))),
+    teamSize: clamp(Number(merged.teamSize), 1, 100),
+    runPreflightChecks: Boolean(merged.runPreflightChecks),
+    resumeFromLastCheckpoint: Boolean(merged.resumeFromLastCheckpoint),
+    requireClarificationBeforeEdits: Boolean(merged.requireClarificationBeforeEdits),
+    strictVerification: Boolean(merged.strictVerification),
+    autoFixVerification: Boolean(merged.autoFixVerification),
+    dryRun: Boolean(merged.dryRun),
+    rollbackOnFailure: Boolean(merged.rollbackOnFailure),
+    maxFileWrites: clamp(Number(merged.maxFileWrites), 1, 120),
+    maxCommandRuns: clamp(Number(merged.maxCommandRuns), 1, 140),
+    modelOverride: String(merged.modelOverride || ""),
+    customVerificationCommands: String(merged.customVerificationCommands || ""),
+  };
 }
 
 function formatDuration(durationMs: number): string {
@@ -1066,10 +1102,7 @@ export default function AutonomousPanel({
     );
 
     if (savedSettings) {
-      setSettings({
-        ...DEFAULT_SETTINGS,
-        ...savedSettings,
-      });
+      setSettings(normalizeAgentSettings(savedSettings));
     }
 
     const savedHistory = parseStoredJson<AgentRunResult[]>(
@@ -1102,7 +1135,7 @@ export default function AutonomousPanel({
     setWorkspaceLoading(true);
     setWorkspaceError(null);
 
-    fetch("/api/files", {
+    apiFetch("/api/files", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
@@ -1236,7 +1269,7 @@ export default function AutonomousPanel({
 
   const callMemoryApi = useCallback(
     async <T,>(payload: Record<string, unknown>): Promise<T> => {
-      const response = await fetch("/api/memory", {
+      const response = await apiFetch("/api/memory", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -1398,6 +1431,19 @@ export default function AutonomousPanel({
     }));
   }
 
+  function applyCodingDefaults() {
+    setSettings((prev) =>
+      normalizeAgentSettings({
+        ...DEFAULT_SETTINGS,
+        executionMode: prev.executionMode,
+        modelOverride: prev.modelOverride,
+        customVerificationCommands: prev.customVerificationCommands,
+      })
+    );
+    setError(null);
+    setStatusMessage("Applied coding-first defaults.");
+  }
+
   function pushHistory(run: AgentRunResult) {
     const normalized = normalizeRunResult(run);
     setHistory((prev) => [normalized, ...prev].slice(0, MAX_HISTORY_ITEMS));
@@ -1464,6 +1510,13 @@ export default function AutonomousPanel({
   async function runAutonomousAgent() {
     if (!goal.trim()) return;
 
+    if (settings.dryRun && looksLikeMutationGoal(goal)) {
+      setError(
+        "Dry run is enabled, so no files will be written. Disable Dry run in Advanced or click Coding Defaults."
+      );
+      return;
+    }
+
     let verificationCommands: AgentCommand[] = [];
     try {
       verificationCommands = parseVerificationCommands(settings.customVerificationCommands);
@@ -1487,7 +1540,7 @@ export default function AutonomousPanel({
     controllerRef.current = controller;
 
     try {
-      const response = await fetch(agentStreamEndpoint, {
+      const response = await apiFetch(agentStreamEndpoint, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -1703,6 +1756,15 @@ export default function AutonomousPanel({
             </button>
 
             <button
+              onClick={applyCodingDefaults}
+              disabled={running}
+              className="text-xs px-2.5 py-1.5 rounded-lg border border-blue-300 text-blue-700 dark:border-blue-700 dark:text-blue-300 hover:bg-blue-50 dark:hover:bg-blue-900/20 transition-colors cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
+              type="button"
+            >
+              Coding Defaults
+            </button>
+
+            <button
               onClick={runAutonomousAgent}
               disabled={!canRun}
               className="inline-flex items-center gap-1.5 px-3 py-2 rounded-xl bg-blue-600 text-white text-sm font-medium hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors cursor-pointer"
@@ -1738,6 +1800,12 @@ export default function AutonomousPanel({
               {result ? result.status.replace("_", " ") : running ? "running" : "idle"}
             </span>
           </div>
+
+          {settings.dryRun && (
+            <div className="rounded-lg border border-amber-300 bg-amber-50 px-3 py-2 text-xs text-amber-800 dark:border-amber-800 dark:bg-amber-900/30 dark:text-amber-200">
+              Dry run is ON. The agent will simulate edits and never write files.
+            </div>
+          )}
 
           {showAdvanced && (
             <div className="grid grid-cols-1 md:grid-cols-2 gap-3 rounded-xl border border-neutral-200 dark:border-neutral-800 p-3 bg-white dark:bg-neutral-950">

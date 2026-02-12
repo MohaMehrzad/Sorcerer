@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import path from "path";
 import { collectProjectIntelligence } from "@/lib/server/projectIntelligence";
+import { buildCorsHeaders, enforceApiAccess } from "@/lib/server/accessGuard";
 
 const WORKSPACE = process.env.WORKSPACE_DIR || process.cwd();
 
@@ -20,11 +21,29 @@ function resolveWorkspace(rawWorkspace: string | null): string {
 
 export const maxDuration = 120;
 
+function corsHeaders(req: NextRequest): Record<string, string> {
+  return buildCorsHeaders(req, "GET, OPTIONS");
+}
+
+export async function OPTIONS(req: NextRequest) {
+  return new NextResponse(null, {
+    status: 204,
+    headers: corsHeaders(req),
+  });
+}
+
 export async function GET(req: NextRequest) {
+  const denied = enforceApiAccess(req, {
+    includeCorsHeaders: true,
+    methods: "GET, OPTIONS",
+    requireOrigin: false,
+  });
+  if (denied) return denied;
+
   try {
     const workspace = resolveWorkspace(req.nextUrl.searchParams.get("workspace"));
     const intelligence = await collectProjectIntelligence(workspace);
-    return NextResponse.json({ intelligence }, { status: 200 });
+    return NextResponse.json({ intelligence }, { status: 200, headers: corsHeaders(req) });
   } catch (err) {
     const message =
       err instanceof Error ? err.message : "Failed to collect project intelligence";
@@ -33,7 +52,7 @@ export async function GET(req: NextRequest) {
       {
         error: message,
       },
-      { status }
+      { status, headers: corsHeaders(req) }
     );
   }
 }

@@ -55,10 +55,16 @@ MODEL_API_KEY=<your_model_api_key>
 # MODEL_API_URL=<your_model_api_url>
 # MODEL_NAME=<your_model_name>
 # WORKSPACE_DIR=<absolute_path_to_workspace>
+# WORKSPACE_ALLOWED_ROOTS=/Users/you/Projects,/Volumes/dev
+# CORS_ALLOWED_ORIGINS=http://127.0.0.1:7777,http://localhost:7777
+# SORCERER_API_AUTH_TOKEN=<shared_ui_api_token>
+# NEXT_PUBLIC_SORCERER_API_AUTH_TOKEN=<same_value_for_browser_requests>
+# ALLOW_REMOTE_API=false
 
 # Reliability tuning (optional)
 # MODEL_API_MAX_RETRIES=<retry_count>
 # MODEL_API_REQUEST_TIMEOUT_MS=<timeout_ms>
+# MODEL_API_COMPLETION_BODY_TIMEOUT_MS=<timeout_ms>
 
 # Optional frontend proxy target for /api/*
 # BACKEND_API_ORIGIN=http://127.0.0.1:7778
@@ -67,12 +73,15 @@ MODEL_API_KEY=<your_model_api_key>
 Notes:
 - `MODEL_API_KEY` is required unless you supply key/url/model in onboarding UI.
 - `WORKSPACE_DIR` defaults to the repository root when omitted.
+- Bot API key entered in onboarding is stored in `sessionStorage` only (not long-term local storage).
 
 ## Workspaces
 
 - Left sidebar lists local workspaces.
 - `New Workspace` opens native picker (macOS/Windows) to select folder/file.
 - Agent always runs against currently selected workspace path.
+- Workspaces outside `WORKSPACE_DIR` must be approved first (picker auto-approves) or included in `WORKSPACE_ALLOWED_ROOTS`.
+- API-based workspace registration only validates already-approved paths; it does not auto-approve new external roots.
 
 ## Global Skills
 
@@ -98,6 +107,7 @@ Main controls:
 - Strict verification and auto-fix loop
 - Dry run and rollback on failure
 - File-write and command-run budgets
+- `Coding Defaults` quick-reset button (multi-agent coding-first profile)
 
 Live run output includes:
 - Status updates
@@ -180,4 +190,6 @@ Run state and checkpoints are stored locally:
 
 ## Security Notice
 
-Sorcerer can read/write files and run local commands in selected workspaces. Use only in trusted local environments unless you add authentication, stronger sandboxing, and tighter command controls.
+Sorcerer can read/write files and run local commands in selected workspaces. It now enforces localhost host checks, origin checks, and optional token auth (`SORCERER_API_AUTH_TOKEN`). Keep it in trusted local environments unless you add stronger sandboxing and tighter command controls.
+
+Sensitive runtime state under `.tmp/agent-memory`, `.tmp/agent-runs`, and `.tmp/approved-workspaces.json` is blocked from `/api/files` read/write access.

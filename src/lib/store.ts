@@ -14,6 +14,7 @@ export interface Chat {
 
 const STORAGE_KEY = "sorcerer-history";
 const BOT_PROFILE_KEY = "sorcerer-bot-profile-v1";
+const BOT_PROFILE_SESSION_API_KEY = "sorcerer-bot-profile-api-key-v1";
 const WORKSPACE_STORAGE_KEY = "sorcerer-workspaces-v1";
 
 export interface WorkspaceEntry {
@@ -33,6 +34,39 @@ export interface BotProfile {
   workspacePath: string;
   enabledSkillFiles: string[];
   updatedAt: number;
+}
+
+function readSessionApiKey(): string {
+  if (typeof window === "undefined") return "";
+
+  try {
+    const raw = sessionStorage.getItem(BOT_PROFILE_SESSION_API_KEY);
+    if (!raw) return "";
+
+    const parsed = JSON.parse(raw) as { apiKey?: unknown } | string;
+    if (typeof parsed === "string") {
+      return parsed.trim();
+    }
+    if (!parsed || typeof parsed !== "object") return "";
+    if (typeof parsed.apiKey !== "string") return "";
+    return parsed.apiKey.trim();
+  } catch {
+    return "";
+  }
+}
+
+function saveSessionApiKey(apiKey: string) {
+  if (typeof window === "undefined") return;
+  const trimmed = apiKey.trim();
+  if (!trimmed) {
+    sessionStorage.removeItem(BOT_PROFILE_SESSION_API_KEY);
+    return;
+  }
+
+  sessionStorage.setItem(
+    BOT_PROFILE_SESSION_API_KEY,
+    JSON.stringify({ apiKey: trimmed })
+  );
 }
 
 function generateId(): string {
@@ -82,7 +116,9 @@ export function loadBotProfile(): BotProfile | null {
 
     const botName = typeof parsed.botName === "string" ? parsed.botName.trim() : "";
     const apiUrl = typeof parsed.apiUrl === "string" ? parsed.apiUrl.trim() : "";
-    const apiKey = typeof parsed.apiKey === "string" ? parsed.apiKey.trim() : "";
+    const legacyApiKey = typeof parsed.apiKey === "string" ? parsed.apiKey.trim() : "";
+    const sessionApiKey = readSessionApiKey();
+    const apiKey = sessionApiKey || legacyApiKey;
     const model = typeof parsed.model === "string" ? parsed.model.trim() : "";
     const botContext =
       typeof parsed.botContext === "string" ? parsed.botContext.trim() : "";
@@ -94,6 +130,17 @@ export function loadBotProfile(): BotProfile | null {
           .map((value) => value.trim())
           .filter(Boolean)
       : [];
+
+    if (legacyApiKey && !sessionApiKey) {
+      saveSessionApiKey(legacyApiKey);
+      try {
+        const redacted = { ...(parsed as Record<string, unknown>) };
+        delete redacted.apiKey;
+        localStorage.setItem(BOT_PROFILE_KEY, JSON.stringify(redacted));
+      } catch {
+        // Best-effort migration only.
+      }
+    }
 
     if (!botName || !apiUrl || !apiKey || !model) {
       return null;
@@ -119,7 +166,9 @@ export function loadBotProfile(): BotProfile | null {
 
 export function saveBotProfile(profile: BotProfile) {
   if (typeof window === "undefined") return;
-  localStorage.setItem(BOT_PROFILE_KEY, JSON.stringify(profile));
+  const { apiKey, ...rest } = profile;
+  localStorage.setItem(BOT_PROFILE_KEY, JSON.stringify(rest));
+  saveSessionApiKey(apiKey);
 }
 
 function deriveWorkspaceName(inputPath: string): string {

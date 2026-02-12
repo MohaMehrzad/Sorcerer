@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, useEffect, useCallback } from "react";
+import { apiFetch } from "@/lib/client/apiFetch";
 
 interface TreeNode {
   name: string;
@@ -125,7 +126,7 @@ export default function FileExplorer({
   const loadTree = useCallback(async () => {
     setLoading(true);
     try {
-      const res = await fetch("/api/files", {
+      const res = await apiFetch("/api/files", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ action: "tree", workspacePath }),
@@ -146,7 +147,7 @@ export default function FileExplorer({
   async function handleSelect(filePath: string) {
     setPreviewLoading(true);
     try {
-      const res = await fetch("/api/files", {
+      const res = await apiFetch("/api/files", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ action: "read", path: filePath, workspacePath }),

@@ -5,6 +5,7 @@ import remarkGfm from "remark-gfm";
 import { Prism as SyntaxHighlighter } from "react-syntax-highlighter";
 import { oneDark } from "react-syntax-highlighter/dist/esm/styles/prism";
 import { useState, useCallback } from "react";
+import { apiFetch } from "@/lib/client/apiFetch";
 
 const RUNNABLE_LANGUAGES = new Set([
   // Interpreted
@@ -91,7 +92,7 @@ function RunButton({
     setExitCode(null);
 
     try {
-      const res = await fetch("/api/execute", {
+      const res = await apiFetch("/api/execute", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ code, language }),
@@ -208,7 +209,7 @@ function SaveButton({ code, language }: { code: string; language: string }) {
 
     setSaving(true);
     try {
-      const res = await fetch("/api/files", {
+      const res = await apiFetch("/api/files", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ action: "write", path: filename, content: code }),
@@ -279,7 +280,7 @@ export default function Markdown({ content }: { content: string }) {
       remarkPlugins={[remarkGfm]}
       components={{
         code({ className, children, ...props }) {
-          const match = /language-(\w+)/.exec(className || "");
+          const match = /language-([A-Za-z0-9_+-]+)/.exec(className || "");
           const codeString = String(children).replace(/\n$/, "");
 
           if (match) {

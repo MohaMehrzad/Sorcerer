@@ -5,15 +5,15 @@
   "scripts": {
     "dev": "pnpm dev:all",
     "dev:all": "node scripts/dev-all.mjs",
-    "dev:frontend": "APP_ROLE=frontend next dev -p 7777",
-    "dev:backend": "APP_ROLE=backend next dev -p 7778",
+    "dev:frontend": "APP_ROLE=frontend next dev -H 127.0.0.1 -p 7777",
+    "dev:backend": "APP_ROLE=backend next dev -H 127.0.0.1 -p 7778",
     "build": "APP_ROLE=frontend next build",
     "build:frontend": "APP_ROLE=frontend next build",
     "build:backend": "APP_ROLE=backend next build",
     "build:all": "pnpm build:frontend && pnpm build:backend",
-    "start": "APP_ROLE=frontend next start -p 7777",
-    "start:frontend": "APP_ROLE=frontend next start -p 7777",
-    "start:backend": "APP_ROLE=backend next start -p 7778",
+    "start": "APP_ROLE=frontend next start -H 127.0.0.1 -p 7777",
+    "start:frontend": "APP_ROLE=frontend next start -H 127.0.0.1 -p 7777",
+    "start:backend": "APP_ROLE=backend next start -H 127.0.0.1 -p 7778",
     "lint": "eslint"
   },
   "dependencies": {
