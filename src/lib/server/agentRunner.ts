@@ -21,6 +21,13 @@ import {
   resolveWorkspacePath,
   toRelativeWorkspacePath,
 } from "@/lib/server/workspace";
+import {
+  addMemoryEntries,
+  ContinuationPacket,
+  MemoryRetrievalDiagnostics,
+  retrieveMemoryContext,
+  saveContinuationPacket,
+} from "@/lib/server/memoryStore";
 
 const execFileAsync = promisify(execFile);
 
@@ -247,6 +254,8 @@ export type AgentRunStatus =
   | "failed"
   | "canceled";
 
+export type AgentExecutionMode = "single" | "multi";
+
 export interface ClarificationQuestion {
   id: string;
   question: string;
@@ -273,10 +282,64 @@ export interface ProjectDigest {
   treePreview: string;
 }
 
+export interface MultiAgentReport {
+  strategy: string;
+  finalChecks: string[];
+  workUnits: Array<{
+    id: string;
+    title: string;
+    status: "pending" | "running" | "completed" | "failed" | "blocked";
+    dependsOn: string[];
+    attempts: number;
+    criticScore?: number;
+    verificationPassed: boolean | null;
+    filesTouched: string[];
+    summary?: string;
+    error?: string;
+    blockingIssues: string[];
+  }>;
+  artifacts: Array<{
+    role: "supervisor" | "scout" | "planner" | "coder" | "critic" | "synthesizer";
+    unitId: string;
+    summary: string;
+    timestamp: string;
+  }>;
+  flakyQuarantinedCommands: string[];
+  observability: {
+    totalDurationMs: number;
+    modelUsage: Array<{
+      role: "supervisor" | "scout" | "planner" | "coder" | "critic" | "synthesizer";
+      tier: "light" | "heavy";
+      calls: number;
+      cacheHits: number;
+      retries: number;
+      escalations: number;
+      estimatedInputTokens: number;
+      estimatedOutputTokens: number;
+      estimatedCostUnits: number;
+      totalLatencyMs: number;
+    }>;
+    unitMetrics: Array<{
+      unitId: string;
+      title: string;
+      status: "pending" | "running" | "completed" | "failed" | "blocked";
+      attempts: number;
+      durationMs: number;
+      criticScore?: number;
+      verificationPassed: boolean | null;
+    }>;
+    failureHeatmap: Array<{
+      label: string;
+      count: number;
+    }>;
+  };
+}
+
 export interface AgentRunResult {
   status: AgentRunStatus;
   runId: string;
   resumedFromRunId?: string;
+  executionMode: AgentExecutionMode;
   goal: string;
   startedAt: string;
   finishedAt: string;
@@ -313,12 +376,14 @@ export interface AgentRunResult {
   projectIntelligence: ProjectIntelligence;
   zeroKnownIssues: boolean;
   steps: AgentStep[];
+  multiAgentReport?: MultiAgentReport;
   error?: string;
 }
 
 export interface AgentRunRequest {
   goal: string;
   workspacePath?: string;
+  executionMode: AgentExecutionMode;
   skillFiles: string[];
   resumeRunId?: string;
   resumeFromLastCheckpoint: boolean;
@@ -332,6 +397,8 @@ export interface AgentRunRequest {
   verificationCommands: AgentCommand[];
   maxFileWrites: number;
   maxCommandRuns: number;
+  maxParallelWorkUnits: number;
+  criticPassThreshold: number;
   teamSize: number;
   runPreflightChecks: boolean;
   requireClarificationBeforeEdits: boolean;
@@ -352,6 +419,7 @@ export type AgentRunProgressEvent =
         teamSize: number;
         runPreflightChecks: boolean;
         requireClarificationBeforeEdits: boolean;
+        executionMode: AgentExecutionMode;
       };
     }
   | {
@@ -626,6 +694,272 @@ function actionSummaryForMemory(action: AgentAction): string {
     default:
       return "unknown";
   }
+}
+
+function collectRecentFailedStepSummaries(
+  steps: AgentStep[],
+  limit = 8
+): string[] {
+  return steps
+    .filter((step) => !step.ok)
+    .slice(-limit)
+    .map(
+      (step) =>
+        `Iter ${step.iteration} ${actionSummaryForMemory(step.action)}: ${truncate(step.summary, 180)}`
+    );
+}
+
+function buildContinuationNextActions(
+  status: AgentRunStatus | "in_progress",
+  nextIterationHint?: number
+): string[] {
+  if (status === "completed") {
+    return ["Start the next goal or archive this completed run context."];
+  }
+  if (status === "needs_clarification") {
+    return ["Provide clarification answers, then rerun this goal."];
+  }
+  if (status === "verification_failed") {
+    return ["Fix verification failures and rerun quality gates."];
+  }
+  if (status === "max_iterations") {
+    return ["Increase iteration budget or narrow scope, then rerun."];
+  }
+  if (status === "canceled") {
+    return ["Resume from latest checkpoint when ready."];
+  }
+  if (status === "in_progress") {
+    return [`Resume from iteration ${String(nextIterationHint ?? 1)}.`];
+  }
+  return ["Review failed step output and rerun with a focused objective."];
+}
+
+function buildSingleAgentContinuationPacket(params: {
+  runId: string;
+  goal: string;
+  status: AgentRunStatus | "in_progress";
+  summary: string;
+  remainingWork: string[];
+  steps: AgentStep[];
+  nextIterationHint?: number;
+}): ContinuationPacket {
+  const fallbackPending = collectRecentFailedStepSummaries(params.steps, 10);
+  const pendingWork = (params.remainingWork.length > 0
+    ? params.remainingWork
+    : fallbackPending
+  ).slice(0, 24);
+
+  return {
+    runId: params.runId,
+    executionMode: "single",
+    goal: params.goal,
+    summary: truncate(params.summary || "Single-agent checkpoint snapshot.", 1200),
+    pendingWork,
+    nextActions: buildContinuationNextActions(params.status, params.nextIterationHint).slice(
+      0,
+      24
+    ),
+    createdAt: new Date().toISOString(),
+  };
+}
+
+function buildSingleAgentMemoryCandidates(params: {
+  goal: string;
+  runId: string;
+  status: AgentRunStatus;
+  summary: string;
+  dryRun: boolean;
+  verificationPassed: boolean | null;
+  verificationCommands: AgentCommand[];
+  verificationChecks: VerificationCheckResult[];
+  changedFiles: string[];
+  steps: AgentStep[];
+  clarificationAnswers: Record<string, string>;
+}): Array<{
+  type: "bug_pattern" | "fix_pattern" | "verification_rule" | "project_convention";
+  title: string;
+  content: string;
+  tags: string[];
+  pinned?: boolean;
+  successScore?: number;
+  confidenceScore?: number;
+  evidence?: Array<{
+    type:
+      | "command_output"
+      | "file_excerpt"
+      | "verification_result"
+      | "human_feedback"
+      | "run_summary"
+      | "external_source";
+    source: string;
+    summary: string;
+    createdAt: string;
+  }>;
+  lastValidatedAt?: string;
+  sourceRunId: string;
+  sourceGoal: string;
+}> {
+  const entries: Array<{
+    type: "bug_pattern" | "fix_pattern" | "verification_rule" | "project_convention";
+    title: string;
+    content: string;
+    tags: string[];
+    pinned?: boolean;
+    successScore?: number;
+    confidenceScore?: number;
+    evidence?: Array<{
+      type:
+        | "command_output"
+        | "file_excerpt"
+        | "verification_result"
+        | "human_feedback"
+        | "run_summary"
+        | "external_source";
+      source: string;
+      summary: string;
+      createdAt: string;
+    }>;
+    lastValidatedAt?: string;
+    sourceRunId: string;
+    sourceGoal: string;
+  }> = [];
+
+  const successfulMutations = params.steps
+    .filter(
+      (step) =>
+        step.ok &&
+        (step.action.type === "write_file" ||
+          step.action.type === "append_file" ||
+          step.action.type === "delete_file")
+    )
+    .slice(-8);
+
+  const runTags = params.dryRun ? ["dry_run"] : [];
+
+  if (params.status === "completed" && successfulMutations.length > 0) {
+    entries.push({
+      type: "fix_pattern",
+      title: "Single-agent completion pattern",
+      content: [
+        `Summary: ${params.summary || "(none)"}`,
+        `Changed files: ${params.changedFiles.join(", ") || "(none)"}`,
+        `Successful mutations: ${successfulMutations.length}`,
+        `Verification passed: ${String(params.verificationPassed)}`,
+        ].join("\n"),
+        tags: ["single_agent", "completion", ...params.changedFiles.slice(0, 5), ...runTags],
+        successScore: 0.84,
+        confidenceScore: 0.82,
+        evidence: [
+          {
+            type: "run_summary",
+            source: `run:${params.runId}`,
+            summary: "Single-agent completion with successful mutations.",
+            createdAt: new Date().toISOString(),
+          },
+        ],
+        lastValidatedAt: new Date().toISOString(),
+        sourceRunId: params.runId,
+        sourceGoal: params.goal,
+      });
+    }
+
+  const failedSteps = collectRecentFailedStepSummaries(params.steps, 6);
+  if ((params.status !== "completed" || failedSteps.length > 0) && !params.dryRun) {
+    entries.push({
+      type: "bug_pattern",
+        title: `Single-agent failure pattern (${params.status})`,
+      content: [
+        `Summary: ${params.summary || "(none)"}`,
+        `Failed step traces: ${failedSteps.join(" | ") || "(none)"}`,
+        `Changed files before failure: ${params.changedFiles.join(", ") || "(none)"}`,
+        ].join("\n"),
+        tags: ["single_agent", "failure", params.status, ...runTags],
+        successScore: params.status === "completed" ? 0.45 : 0.22,
+        confidenceScore: 0.42,
+        evidence: [
+          {
+            type: "run_summary",
+            source: `run:${params.runId}`,
+            summary: "Failure captured from step traces and terminal summary.",
+            createdAt: new Date().toISOString(),
+          },
+        ],
+        sourceRunId: params.runId,
+        sourceGoal: params.goal,
+      });
+    }
+
+  if (params.verificationCommands.length > 0) {
+      entries.push({
+        type: "verification_rule",
+        title: "Single-agent verification baseline",
+      content: [
+        `Commands: ${params.verificationCommands.map((command) => stringifyCommand(command)).join(" | ")}`,
+        `Verification passed: ${String(params.verificationPassed)}`,
+        `Failed checks: ${params.verificationChecks.filter((check) => !check.ok).length}`,
+        ].join("\n"),
+        tags: ["verification", "single_agent", ...runTags],
+        pinned: params.verificationPassed === true,
+        successScore: params.verificationPassed === false ? 0.4 : 0.76,
+        confidenceScore: params.verificationPassed === false ? 0.45 : 0.82,
+        evidence: [
+          {
+            type: "verification_result",
+            source: `run:${params.runId}`,
+            summary: `Verification checks captured: ${params.verificationChecks.length}`,
+            createdAt: new Date().toISOString(),
+          },
+        ],
+        lastValidatedAt: new Date().toISOString(),
+        sourceRunId: params.runId,
+        sourceGoal: params.goal,
+      });
+    }
+
+  if (Object.keys(params.clarificationAnswers).length > 0) {
+      entries.push({
+        type: "project_convention",
+        title: "Clarification conventions (single-agent run)",
+      content: Object.entries(params.clarificationAnswers)
+        .map(([key, value]) => `${key}: ${value}`)
+        .join("\n"),
+        tags: ["clarification", "convention", "single_agent", ...runTags],
+        successScore: 0.7,
+        confidenceScore: 0.74,
+        evidence: [
+          {
+            type: "human_feedback",
+            source: `run:${params.runId}`,
+            summary: "User-provided clarification answers captured.",
+            createdAt: new Date().toISOString(),
+          },
+        ],
+        sourceRunId: params.runId,
+        sourceGoal: params.goal,
+      });
+    }
+
+  entries.push({
+    type: "project_convention",
+    title: `Single-agent run summary (${params.status})`,
+    content: params.summary || "(none)",
+    tags: ["run_summary", "single_agent", params.status, ...runTags],
+    successScore: params.status === "completed" ? 0.82 : 0.45,
+    confidenceScore: params.status === "completed" ? 0.8 : 0.5,
+    evidence: [
+      {
+        type: "run_summary",
+        source: `run:${params.runId}`,
+        summary: "Final single-agent run synthesis.",
+        createdAt: new Date().toISOString(),
+      },
+    ],
+    lastValidatedAt: new Date().toISOString(),
+    sourceRunId: params.runId,
+    sourceGoal: params.goal,
+  });
+
+  return entries.slice(0, 24);
 }
 
 function compactConversationHistory(
@@ -2405,7 +2739,10 @@ function buildInitialMessage(
   initialTree: string,
   teamRoster: string[],
   projectDigest: ProjectDigest,
-  projectIntelligence: ProjectIntelligence
+  projectIntelligence: ProjectIntelligence,
+  longTermMemoryBlock: string,
+  continuationHint: string,
+  memoryDiagnosticsHint: string
 ): string {
   const verificationCommands =
     request.verificationCommands.length > 0
@@ -2443,6 +2780,15 @@ function buildInitialMessage(
     "Project intelligence:",
     formatIntelligenceForPrompt(projectIntelligence),
     "",
+    "Retrieved long-term memory:",
+    longTermMemoryBlock || "(none)",
+    "",
+    "Continuation hint:",
+    continuationHint || "(none)",
+    "",
+    "Memory diagnostics:",
+    memoryDiagnosticsHint || "(none)",
+    "",
     "Clarification answers provided by the user:",
     formatClarificationAnswers(request.clarificationAnswers),
     "",
@@ -2454,6 +2800,50 @@ function buildInitialMessage(
     "",
     "Start with the best next action.",
   ].join("\n");
+}
+
+function formatMemoryDiagnosticsForPrompt(
+  diagnostics: MemoryRetrievalDiagnostics | undefined
+): string {
+  if (!diagnostics) return "(none)";
+  if (diagnostics.conflictCount === 0) {
+    return "No contradictory memory pairs detected.";
+  }
+  const lines = [
+    `Conflict count: ${diagnostics.conflictCount}`,
+    ...diagnostics.conflicts.slice(0, 5).map((conflict, index) => {
+      return `${index + 1}. ${conflict.reason} topic=${conflict.topicTokens.join(",") || "(unspecified)"} ids=${conflict.firstEntryId} vs ${conflict.secondEntryId}`;
+    }),
+    ...diagnostics.guidance.map((line) => `- ${line}`),
+  ];
+  return lines.join("\n");
+}
+
+function isMutationAction(action: AgentAction): boolean {
+  return (
+    action.type === "write_file" ||
+    action.type === "append_file" ||
+    action.type === "delete_file"
+  );
+}
+
+function isEvidenceAction(action: AgentAction): boolean {
+  return (
+    action.type === "read_file" ||
+    action.type === "read_many_files" ||
+    action.type === "run_command" ||
+    action.type === "search_files"
+  );
+}
+
+function findLastEvidenceIteration(steps: AgentStep[]): number {
+  let last = 0;
+  for (const step of steps) {
+    if (step.ok && isEvidenceAction(step.action)) {
+      last = Math.max(last, step.iteration);
+    }
+  }
+  return last;
 }
 
 function buildIterationPrompt(iteration: number, maxIterations: number): string {
@@ -2879,6 +3269,7 @@ export async function runAutonomousAgent(
   const base = {
     runId,
     resumedFromRunId,
+    executionMode: "single" as AgentExecutionMode,
     goal: request.goal,
     startedAt,
     model: request.modelOverride || config.model,
@@ -2938,6 +3329,7 @@ export async function runAutonomousAgent(
       teamSize: request.teamSize,
       runPreflightChecks: request.runPreflightChecks,
       requireClarificationBeforeEdits: request.requireClarificationBeforeEdits,
+      executionMode: "single",
     },
   });
 
@@ -3019,12 +3411,57 @@ export async function runAutonomousAgent(
     }
   };
 
+  let longTermMemoryBlock = "(no long-term memory retrieved)";
+  let continuationHint = "(none)";
+  let memoryDiagnosticsHint = "(none)";
+  let requiresMemoryEvidenceBeforeMutation = false;
+  let lastEvidenceIteration = 0;
+
   try {
     throwIfAborted(hooks?.signal);
     [projectDigest, projectIntelligence] = await Promise.all([
       buildProjectDigest(workspace),
       collectProjectIntelligence(workspace).catch(() => createEmptyProjectIntelligence(workspace)),
     ]);
+    const retrievedMemory = await retrieveMemoryContext({
+      workspace,
+      query: request.goal,
+      limit: 10,
+      maxChars: 5000,
+      includePinned: true,
+      types: [
+        "bug_pattern",
+        "fix_pattern",
+        "verification_rule",
+        "project_convention",
+        "continuation",
+      ],
+    }).catch(() => undefined);
+    if (retrievedMemory) {
+      longTermMemoryBlock = retrievedMemory.contextBlock;
+      memoryDiagnosticsHint = formatMemoryDiagnosticsForPrompt(
+        retrievedMemory.diagnostics
+      );
+      requiresMemoryEvidenceBeforeMutation =
+        retrievedMemory.diagnostics.requiresVerificationBeforeMutation;
+      if (retrievedMemory.latestContinuation) {
+        continuationHint = [
+          `Latest continuation run: ${retrievedMemory.latestContinuation.runId}`,
+          `Summary: ${retrievedMemory.latestContinuation.summary}`,
+          `Pending: ${retrievedMemory.latestContinuation.pendingWork.join("; ") || "(none)"}`,
+          `Next: ${retrievedMemory.latestContinuation.nextActions.join("; ") || "(none)"}`,
+        ].join("\n");
+      }
+      if (requiresMemoryEvidenceBeforeMutation) {
+        emit(hooks, {
+          type: "status",
+          data: {
+            message:
+              "Memory conflicts detected; mutation actions now require recent evidence steps.",
+          },
+        });
+      }
+    }
     clarificationQuestions = buildClarificationQuestions(
       effectiveRequest,
       projectDigest,
@@ -3093,6 +3530,34 @@ export async function runAutonomousAgent(
       await safeAppendEvent("needs_clarification", {
         questions: requiredClarificationQuestions.length,
       });
+      await saveContinuationPacket(
+        workspace,
+        buildSingleAgentContinuationPacket({
+          runId,
+          goal: request.goal,
+          status: "needs_clarification",
+          summary: result.summary,
+          remainingWork: result.remainingWork,
+          steps,
+          nextIterationHint: 1,
+        })
+      ).catch(() => undefined);
+      await addMemoryEntries(
+        workspace,
+        buildSingleAgentMemoryCandidates({
+          goal: request.goal,
+          runId,
+          status: "needs_clarification",
+          summary: result.summary,
+          dryRun: request.dryRun,
+          verificationPassed: null,
+          verificationCommands,
+          verificationChecks,
+          changedFiles: Array.from(changedFiles),
+          steps,
+          clarificationAnswers: effectiveRequest.clarificationAnswers,
+        })
+      ).catch(() => undefined);
       return result;
     }
 
@@ -3166,7 +3631,10 @@ export async function runAutonomousAgent(
             truncate(initialTree, 6000),
             teamRoster,
             projectDigest,
-            projectIntelligence
+            projectIntelligence,
+            longTermMemoryBlock,
+            continuationHint,
+            memoryDiagnosticsHint
           ),
         },
       ];
@@ -3224,6 +3692,8 @@ export async function runAutonomousAgent(
       }
     }
 
+    lastEvidenceIteration = findLastEvidenceIteration(steps);
+
     await safePersistCheckpoint(
       "in_progress",
       nextIteration - 1,
@@ -3271,6 +3741,18 @@ export async function runAutonomousAgent(
           iteration,
           droppedMessages: compactionState.droppedMessages,
         });
+        await saveContinuationPacket(
+          workspace,
+          buildSingleAgentContinuationPacket({
+            runId,
+            goal: request.goal,
+            status: "in_progress",
+            summary: `History compacted at iteration ${iteration}.`,
+            remainingWork,
+            steps,
+            nextIterationHint: Math.min(request.maxIterations, iteration + 1),
+          })
+        ).catch(() => undefined);
       }
 
       emit(hooks, {
@@ -3441,7 +3923,24 @@ export async function runAutonomousAgent(
         break;
       }
 
-      const toolResult = await executeAction(decision.action, toolContext);
+      let toolResult: ToolResult;
+      if (
+        requiresMemoryEvidenceBeforeMutation &&
+        isMutationAction(decision.action) &&
+        lastEvidenceIteration < Math.max(1, iteration - 2)
+      ) {
+        toolResult = {
+          ok: false,
+          summary: "Memory evidence gate blocked mutation action",
+          output: [
+            "Conflicting long-term memory signals are active for this goal.",
+            "Before mutating files, gather fresh evidence with read_file/read_many_files/search_files/run_command.",
+            `Last evidence iteration: ${lastEvidenceIteration || 0}`,
+          ].join("\n"),
+        };
+      } else {
+        toolResult = await executeAction(decision.action, toolContext);
+      }
       const step: AgentStep = {
         iteration,
         phase: "action",
@@ -3455,6 +3954,10 @@ export async function runAutonomousAgent(
 
       steps.push(step);
       emit(hooks, { type: "step", data: { step } });
+
+      if (step.ok && isEvidenceAction(decision.action)) {
+        lastEvidenceIteration = iteration;
+      }
 
       history.push({
         role: "user",
@@ -3534,6 +4037,33 @@ export async function runAutonomousAgent(
       commandsRun: result.commandsRun.length,
       verificationPassed: result.verificationPassed,
     });
+    await saveContinuationPacket(
+      workspace,
+      buildSingleAgentContinuationPacket({
+        runId,
+        goal: request.goal,
+        status: result.status,
+        summary: result.summary,
+        remainingWork: result.remainingWork,
+        steps: result.steps,
+      })
+    ).catch(() => undefined);
+    await addMemoryEntries(
+      workspace,
+      buildSingleAgentMemoryCandidates({
+        goal: request.goal,
+        runId,
+        status: result.status,
+        summary: result.summary,
+        dryRun: request.dryRun,
+        verificationPassed: result.verificationPassed,
+        verificationCommands,
+        verificationChecks: result.verificationChecks,
+        changedFiles: result.filesChanged,
+        steps: result.steps,
+        clarificationAnswers: effectiveRequest.clarificationAnswers,
+      })
+    ).catch(() => undefined);
     return result;
   } catch (err) {
     const isCanceled = err instanceof RunCanceledError;
@@ -3590,6 +4120,33 @@ export async function runAutonomousAgent(
       error: failedResult.error || "unknown error",
       iterationsUsed: failedResult.iterationsUsed,
     });
+    await saveContinuationPacket(
+      workspace,
+      buildSingleAgentContinuationPacket({
+        runId,
+        goal: request.goal,
+        status: failedResult.status,
+        summary: failedResult.error || failedResult.summary,
+        remainingWork: failedResult.remainingWork,
+        steps: failedResult.steps,
+      })
+    ).catch(() => undefined);
+    await addMemoryEntries(
+      workspace,
+      buildSingleAgentMemoryCandidates({
+        goal: request.goal,
+        runId,
+        status: failedResult.status,
+        summary: failedResult.error || failedResult.summary,
+        dryRun: request.dryRun,
+        verificationPassed: failedResult.verificationPassed,
+        verificationCommands,
+        verificationChecks: failedResult.verificationChecks,
+        changedFiles: failedResult.filesChanged,
+        steps: failedResult.steps,
+        clarificationAnswers: effectiveRequest.clarificationAnswers,
+      })
+    ).catch(() => undefined);
     return failedResult;
   }
 }
@@ -3630,6 +4187,16 @@ function parseNumber(value: unknown): number | undefined {
   return undefined;
 }
 
+function clampDecimal(
+  value: number | undefined,
+  fallback: number,
+  min: number,
+  max: number
+): number {
+  if (value === undefined || Number.isNaN(value)) return fallback;
+  return Math.max(min, Math.min(max, value));
+}
+
 function normalizeSkillFileReference(value: string): string {
   return value.trim().replace(/\\/g, "/");
 }
@@ -3645,6 +4212,7 @@ export function normalizeAgentRunRequest(body: unknown): {
   const data = body as {
     goal?: unknown;
     workspacePath?: unknown;
+    executionMode?: unknown;
     resumeRunId?: unknown;
     resumeFromLastCheckpoint?: unknown;
     maxIterations?: unknown;
@@ -3662,6 +4230,8 @@ export function normalizeAgentRunRequest(body: unknown): {
     verificationCommands?: unknown;
     maxFileWrites?: unknown;
     maxCommandRuns?: unknown;
+    maxParallelWorkUnits?: unknown;
+    criticPassThreshold?: unknown;
   };
 
   const goal = typeof data.goal === "string" ? data.goal.trim() : "";
@@ -3677,6 +4247,7 @@ export function normalizeAgentRunRequest(body: unknown): {
     typeof data.resumeRunId === "string" && data.resumeRunId.trim().length > 0
       ? data.resumeRunId.trim()
       : undefined;
+  const executionMode = data.executionMode === "single" ? "single" : "multi";
 
   const maxIterations = clampNumber(
     parseNumber(data.maxIterations),
@@ -3698,6 +4269,18 @@ export function normalizeAgentRunRequest(body: unknown): {
     1,
     140
   );
+  const maxParallelWorkUnits = clampNumber(
+    parseNumber(data.maxParallelWorkUnits),
+    3,
+    1,
+    8
+  );
+  const criticPassThreshold = clampDecimal(
+    parseNumber(data.criticPassThreshold),
+    0.72,
+    0.2,
+    0.95
+  );
 
   const teamSize = clampNumber(
     parseNumber(data.teamSize),
@@ -3713,7 +4296,7 @@ export function normalizeAgentRunRequest(body: unknown): {
   const runPreflightChecks = parseBoolean(data.runPreflightChecks, true);
   const requireClarificationBeforeEdits = parseBoolean(
     data.requireClarificationBeforeEdits,
-    true
+    false
   );
   const resumeFromLastCheckpoint = parseBoolean(data.resumeFromLastCheckpoint, true);
 
@@ -3800,6 +4383,7 @@ export function normalizeAgentRunRequest(body: unknown): {
     request: {
       goal,
       workspacePath,
+      executionMode,
       skillFiles,
       resumeRunId,
       resumeFromLastCheckpoint,
@@ -3817,6 +4401,8 @@ export function normalizeAgentRunRequest(body: unknown): {
       verificationCommands,
       maxFileWrites,
       maxCommandRuns,
+      maxParallelWorkUnits,
+      criticPassThreshold,
     },
   };
 }

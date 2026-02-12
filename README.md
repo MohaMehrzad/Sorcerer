@@ -7,8 +7,10 @@ It provides:
 - Bot onboarding (name, API key, model URL/model, workspace)
 - Global reusable skills
 - Autonomous plan/act/verify runs with live streaming status
+- Async multi-agent orchestration (supervisor, scout, planner, coder, critic, synthesizer)
 - Project intelligence and clarification-first execution
 - Run checkpoints/resume + rollback-on-failure controls
+- Cross-context long-term memory with continuation packets
 
 ## Requirements
 
@@ -21,10 +23,26 @@ It provides:
 
 ```bash
 pnpm install
-pnpm dev
+# Terminal 1 (backend API)
+pnpm dev:backend
+
+# Terminal 2 (frontend UI)
+pnpm dev:frontend
 ```
 
-Open: [http://localhost:7777](http://localhost:7777)
+Frontend: [http://localhost:7777](http://localhost:7777)  
+Backend API: [http://localhost:7778](http://localhost:7778)
+
+`pnpm dev` starts both backend (`7778`) and frontend (`7777`) together.
+It now uses an internal supervisor that shuts both processes down cleanly on `Ctrl+C`.
+
+For production-style split runtime:
+
+```bash
+pnpm build:all
+pnpm start:backend
+pnpm start:frontend
+```
 
 ## Environment Variables
 
@@ -41,6 +59,9 @@ MODEL_API_KEY=<your_model_api_key>
 # Reliability tuning (optional)
 # MODEL_API_MAX_RETRIES=<retry_count>
 # MODEL_API_REQUEST_TIMEOUT_MS=<timeout_ms>
+
+# Optional frontend proxy target for /api/*
+# BACKEND_API_ORIGIN=http://127.0.0.1:7778
 ```
 
 Notes:
@@ -67,9 +88,12 @@ Skills are global to Sorcerer (not per workspace):
 Start a run from the main panel by entering a goal and pressing `Start Autonomous Run`.
 
 Main controls:
+- Execution mode (`multi-agent async` or `single-agent legacy`)
 - Max iterations
+- Max parallel work units (multi-agent mode)
+- Critic pass threshold (multi-agent mode)
 - Team size (1-100)
-- Clarification-before-edits gate
+- Clarification-before-edits gate (default: off)
 - Preflight checks
 - Strict verification and auto-fix loop
 - Dry run and rollback on failure
@@ -81,6 +105,9 @@ Live run output includes:
 - Verification checks
 - Accessed/edited files
 - Recent runs summary
+- Per-unit timeline bars (multi-agent mode)
+- Exportable telemetry JSON snapshots from current or historical runs
+- Memory panel for retrieval, pin/forget, export/import, and latest continuation
 
 ## Reliability Behavior
 
@@ -89,6 +116,46 @@ Live run output includes:
 - Heartbeat statuses are emitted while waiting for model responses.
 - Failed/stale checkpoints are not auto-resumed.
 - Invalid model action JSON falls back to a safe discovery action instead of crashing.
+- Multi-agent dependency replanning repairs deadlocks/cycles before declaring blocked.
+- Scout/planner artifacts are hash-cached to speed up repeated runs.
+- Role-based model routing supports lightweight scout/planner and heavier coder/critic/synthesizer.
+- Low-confidence coder outputs and borderline critic scores trigger escalation passes automatically.
+- Deterministic `patch_file` hunks use conflict-safe oldText/newText matching before writes.
+- Verification supports flaky test retries and quarantine tracking.
+- Safety policies deny sensitive write paths (`.git`, `.env*`, key/cert/secret paths).
+- Observability includes model usage, retries/cache hits/escalations, unit timings, and failure heatmap.
+- Single-agent and multi-agent runs both write continuation packets + long-term memory entries for cross-window resume.
+- Memory retrieval now detects contradictory entries and emits diagnostics/guidance.
+- When contradictions are active, mutation actions require recent evidence steps before write/delete.
+
+## Long-Term Memory
+
+Local memory store path:
+
+- `./.tmp/agent-memory/memory-store.json`
+
+Stored memory types:
+
+- `bug_pattern`
+- `fix_pattern`
+- `verification_rule`
+- `project_convention`
+- `continuation`
+
+Memory metadata:
+
+- Confidence score and success score per entry
+- Evidence snapshots (run summary, verification result, command/file evidence)
+- Validation state (`lastValidatedAt`, invalidation/supersede relationships)
+
+UI support:
+
+- Retrieve relevant memory context by query
+- Pin/unpin memory entries
+- Forget memory entries
+- Export/import memory store (merge or replace)
+- View latest continuation packet to resume after context compaction or reruns
+- View conflict count and evidence-gate status on retrieval
 
 ## Run Persistence
 
@@ -102,6 +169,7 @@ Run state and checkpoints are stored locally:
 
 - `POST /api/agent`
 - `POST /api/agent/stream`
+- `POST /api/memory`
 - `POST /api/files`
 - `POST /api/execute`
 - `POST /api/search`

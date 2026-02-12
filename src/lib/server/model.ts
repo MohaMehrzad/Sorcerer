@@ -10,10 +10,15 @@ export interface ModelConfig {
 }
 
 interface CompletionChoice {
+  delta?: {
+    content?: string;
+    reasoning?: string;
+  };
   message?: {
     role?: string;
     content?: string;
   };
+  finish_reason?: string | null;
 }
 
 interface CompletionResponse {
@@ -38,6 +43,9 @@ const MAX_REQUEST_ATTEMPTS = 6;
 const DEFAULT_MODEL_REQUEST_TIMEOUT_MS = 20000;
 const MIN_MODEL_REQUEST_TIMEOUT_MS = 8000;
 const MAX_MODEL_REQUEST_TIMEOUT_MS = 180000;
+const DEFAULT_COMPLETION_BODY_TIMEOUT_MS = 120000;
+const MIN_COMPLETION_BODY_TIMEOUT_MS = 10000;
+const MAX_COMPLETION_BODY_TIMEOUT_MS = 300000;
 const MAX_ERROR_BODY_CHARS = 1800;
 
 export function getModelConfig(): ModelConfig {
@@ -179,6 +187,16 @@ function getModelRequestTimeoutMs(): number {
   return clampNumber(raw, MIN_MODEL_REQUEST_TIMEOUT_MS, MAX_MODEL_REQUEST_TIMEOUT_MS);
 }
 
+function getCompletionBodyTimeoutMs(): number {
+  const raw = Number(
+    process.env.MODEL_API_COMPLETION_BODY_TIMEOUT_MS ?? DEFAULT_COMPLETION_BODY_TIMEOUT_MS
+  );
+  if (!Number.isFinite(raw)) {
+    return DEFAULT_COMPLETION_BODY_TIMEOUT_MS;
+  }
+  return clampNumber(raw, MIN_COMPLETION_BODY_TIMEOUT_MS, MAX_COMPLETION_BODY_TIMEOUT_MS);
+}
+
 function buildRequestBody(messages: ModelMessage[], options: ModelRequestOptions) {
   const body: Record<string, unknown> = {
     model: options.model,
@@ -300,13 +318,164 @@ export async function completeModel(
       `Model API error ${response.status}: ${truncateText(errorText, MAX_ERROR_BODY_CHARS)}`
     );
   }
+  const bodyTimeoutMs = getCompletionBodyTimeoutMs();
+  const contentType = (response.headers.get("content-type") || "").toLowerCase();
 
-  const raw = (await response.json()) as CompletionResponse;
-  const content = raw.choices?.[0]?.message?.content;
-
-  if (typeof content !== "string" || content.trim().length === 0) {
-    throw new Error("Model response did not include text content");
+  if (contentType.includes("text/event-stream")) {
+    return readSseCompletion(response, bodyTimeoutMs);
   }
 
-  return { content, raw };
+  const raw = (await readJsonWithTimeout(response, bodyTimeoutMs)) as CompletionResponse;
+  const content = raw.choices?.[0]?.message?.content;
+
+  if (typeof content === "string" && content.trim().length > 0) {
+    return { content, raw };
+  }
+
+  if (!contentType.includes("application/json")) {
+    return readSseCompletion(response, bodyTimeoutMs);
+  }
+
+  throw new Error("Model response did not include text content");
+}
+
+async function readJsonWithTimeout(response: Response, timeoutMs: number): Promise<unknown> {
+  let timeoutId: NodeJS.Timeout | null = null;
+  try {
+    const timeoutPromise = new Promise<never>((_, reject) => {
+      timeoutId = setTimeout(() => {
+        response.body?.cancel().catch(() => undefined);
+        reject(
+          new Error(
+            `Model completion body timeout after ${timeoutMs}ms while waiting for JSON payload`
+          )
+        );
+      }, timeoutMs);
+    });
+    return (await Promise.race([response.json(), timeoutPromise])) as unknown;
+  } finally {
+    if (timeoutId) {
+      clearTimeout(timeoutId);
+    }
+  }
+}
+
+function extractStreamChunkContent(chunk: CompletionResponse): {
+  deltaContent?: string;
+  messageContent?: string;
+  finished: boolean;
+} {
+  const choice = chunk.choices?.[0];
+  const deltaContent =
+    choice?.delta && typeof choice.delta.content === "string"
+      ? choice.delta.content
+      : undefined;
+  const messageContent =
+    choice?.message && typeof choice.message.content === "string"
+      ? choice.message.content
+      : undefined;
+  const finished = Boolean(choice?.finish_reason);
+  return {
+    deltaContent,
+    messageContent,
+    finished,
+  };
+}
+
+async function readSseCompletion(
+  response: Response,
+  timeoutMs: number
+): Promise<{ content: string; raw: CompletionResponse }> {
+  const reader = response.body?.getReader();
+  if (!reader) {
+    throw new Error("Model stream response body is unavailable");
+  }
+
+  const decoder = new TextDecoder();
+  const deadline = Date.now() + timeoutMs;
+  let buffer = "";
+  let finalMessageContent = "";
+  const deltaParts: string[] = [];
+  let lastChunk: CompletionResponse | null = null;
+
+  while (Date.now() < deadline) {
+    const remainingMs = Math.max(1, deadline - Date.now());
+    let timeoutId: NodeJS.Timeout | null = null;
+    try {
+      const timeoutPromise = new Promise<never>((_, reject) => {
+        timeoutId = setTimeout(() => {
+          reject(
+            new Error(
+              `Model completion body timeout after ${timeoutMs}ms while waiting for stream payload`
+            )
+          );
+        }, remainingMs);
+      });
+
+      const next = (await Promise.race([reader.read(), timeoutPromise])) as ReadableStreamReadResult<Uint8Array>;
+      if (next.done) {
+        break;
+      }
+
+      buffer += decoder.decode(next.value, { stream: true });
+      const lines = buffer.split("\n");
+      buffer = lines.pop() || "";
+
+      for (const rawLine of lines) {
+        const line = rawLine.trim();
+        if (!line || !line.startsWith("data:")) continue;
+        const payload = line.slice(5).trim();
+        if (!payload || payload === "[DONE]") {
+          const content = finalMessageContent.trim() || deltaParts.join("").trim();
+          if (content) {
+            await reader.cancel().catch(() => undefined);
+            return {
+              content,
+              raw: lastChunk || { choices: [] },
+            };
+          }
+          continue;
+        }
+
+        let parsed: CompletionResponse;
+        try {
+          parsed = JSON.parse(payload) as CompletionResponse;
+        } catch {
+          continue;
+        }
+        lastChunk = parsed;
+        const extracted = extractStreamChunkContent(parsed);
+        if (typeof extracted.messageContent === "string" && extracted.messageContent.trim()) {
+          finalMessageContent = extracted.messageContent;
+        }
+        if (typeof extracted.deltaContent === "string" && extracted.deltaContent.length > 0) {
+          deltaParts.push(extracted.deltaContent);
+        }
+        if (extracted.finished) {
+          const content = finalMessageContent.trim() || deltaParts.join("").trim();
+          if (content) {
+            await reader.cancel().catch(() => undefined);
+            return {
+              content,
+              raw: parsed,
+            };
+          }
+        }
+      }
+    } finally {
+      if (timeoutId) {
+        clearTimeout(timeoutId);
+      }
+    }
+  }
+
+  await reader.cancel().catch(() => undefined);
+  const content = finalMessageContent.trim() || deltaParts.join("").trim();
+  if (content) {
+    return {
+      content,
+      raw: lastChunk || { choices: [] },
+    };
+  }
+  throw new Error("Model stream response did not include text content");
 }
