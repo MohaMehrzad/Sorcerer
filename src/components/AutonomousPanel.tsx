@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 interface AgentCommand {
   program: string;
@@ -50,6 +50,8 @@ interface ModuleEdge {
   to: string;
 }
 
+type AgentExecutionMode = "single" | "multi";
+
 interface ClarificationOption {
   id: string;
   label: string;
@@ -87,6 +89,55 @@ interface ProjectIntelligence {
   summary: string;
 }
 
+type MemoryEntryType =
+  | "bug_pattern"
+  | "fix_pattern"
+  | "verification_rule"
+  | "project_convention"
+  | "continuation";
+
+interface LongTermMemoryEntry {
+  id: string;
+  workspace: string;
+  type: MemoryEntryType;
+  title: string;
+  content: string;
+  tags: string[];
+  pinned: boolean;
+  successScore: number;
+  useCount: number;
+  createdAt: string;
+  updatedAt: string;
+  lastUsedAt?: string;
+  sourceRunId?: string;
+  sourceGoal?: string;
+  confidenceScore?: number;
+  lastValidatedAt?: string;
+  invalidatedAt?: string;
+  evidence?: Array<{
+    type: string;
+    source: string;
+    summary: string;
+    createdAt: string;
+  }>;
+}
+
+interface ContinuationPacket {
+  runId: string;
+  executionMode: "single" | "multi";
+  goal: string;
+  summary: string;
+  pendingWork: string[];
+  nextActions: string[];
+  createdAt: string;
+}
+
+interface MemoryRetrievalDiagnostics {
+  conflictCount: number;
+  requiresVerificationBeforeMutation: boolean;
+  guidance: string[];
+}
+
 type AgentRunStatus =
   | "completed"
   | "max_iterations"
@@ -99,6 +150,7 @@ interface AgentRunResult {
   status: AgentRunStatus;
   runId?: string;
   resumedFromRunId?: string;
+  executionMode: AgentExecutionMode;
   goal: string;
   summary: string;
   error?: string;
@@ -148,6 +200,58 @@ interface AgentRunResult {
   startedAt: string;
   finishedAt: string;
   model: string;
+  multiAgentReport?: {
+    strategy: string;
+    finalChecks: string[];
+    workUnits: Array<{
+      id: string;
+      title: string;
+      status: "pending" | "running" | "completed" | "failed" | "blocked";
+      dependsOn: string[];
+      attempts: number;
+      criticScore?: number;
+      verificationPassed: boolean | null;
+      filesTouched: string[];
+      summary?: string;
+      error?: string;
+      blockingIssues: string[];
+    }>;
+    artifacts: Array<{
+      role: "supervisor" | "scout" | "planner" | "coder" | "critic" | "synthesizer";
+      unitId: string;
+      summary: string;
+      timestamp: string;
+    }>;
+    flakyQuarantinedCommands: string[];
+    observability: {
+      totalDurationMs: number;
+      modelUsage: Array<{
+        role: "supervisor" | "scout" | "planner" | "coder" | "critic" | "synthesizer";
+        tier: "light" | "heavy";
+        calls: number;
+        cacheHits: number;
+        retries: number;
+        escalations: number;
+        estimatedInputTokens: number;
+        estimatedOutputTokens: number;
+        estimatedCostUnits: number;
+        totalLatencyMs: number;
+      }>;
+      unitMetrics: Array<{
+        unitId: string;
+        title: string;
+        status: "pending" | "running" | "completed" | "failed" | "blocked";
+        attempts: number;
+        durationMs: number;
+        criticScore?: number;
+        verificationPassed: boolean | null;
+      }>;
+      failureHeatmap: Array<{
+        label: string;
+        count: number;
+      }>;
+    };
+  };
 }
 
 type AgentStreamEvent =
@@ -164,6 +268,7 @@ type AgentStreamEvent =
         teamSize: number;
         runPreflightChecks: boolean;
         requireClarificationBeforeEdits: boolean;
+        executionMode: AgentExecutionMode;
       };
     }
   | {
@@ -201,7 +306,10 @@ type AgentStreamEvent =
     };
 
 interface AgentSettings {
+  executionMode: AgentExecutionMode;
   maxIterations: number;
+  maxParallelWorkUnits: number;
+  criticPassThreshold: number;
   teamSize: number;
   runPreflightChecks: boolean;
   resumeFromLastCheckpoint: boolean;
@@ -238,11 +346,14 @@ const HISTORY_STORAGE_KEY = "autonomous-agent-history-v1";
 const MAX_HISTORY_ITEMS = 12;
 
 const DEFAULT_SETTINGS: AgentSettings = {
+  executionMode: "multi",
   maxIterations: 18,
+  maxParallelWorkUnits: 3,
+  criticPassThreshold: 0.72,
   teamSize: 8,
   runPreflightChecks: true,
   resumeFromLastCheckpoint: true,
-  requireClarificationBeforeEdits: true,
+  requireClarificationBeforeEdits: false,
   strictVerification: true,
   autoFixVerification: true,
   dryRun: false,
@@ -319,6 +430,7 @@ function formatRunReport(result: AgentRunResult): string {
     `- Run ID: ${result.runId || "(unknown)"}`,
     `- Resumed from run: ${result.resumedFromRunId || "(fresh run)"}`,
     `- Status: ${result.status}`,
+    `- Execution mode: ${result.executionMode}`,
     `- Model: ${result.model}`,
     `- Iterations: ${result.iterationsUsed}/${result.maxIterations}`,
     `- Team size: ${result.teamSize}`,
@@ -437,6 +549,63 @@ function formatRunReport(result: AgentRunResult): string {
     );
   }
 
+  if (result.multiAgentReport) {
+    const observability = result.multiAgentReport.observability;
+    lines.push(
+      "",
+      "### Multi-Agent Strategy",
+      `- Strategy: ${result.multiAgentReport.strategy}`,
+      `- Final checks: ${result.multiAgentReport.finalChecks.join(", ") || "(none)"}`,
+      `- Flaky quarantined commands: ${result.multiAgentReport.flakyQuarantinedCommands?.join(", ") || "(none)"}`,
+      `- Runtime: ${observability ? `${Math.round(observability.totalDurationMs / 1000)}s` : "n/a"}`,
+      "",
+      "### Work Units",
+      ...result.multiAgentReport.workUnits.map(
+        (unit) =>
+          `- ${unit.id} [${unit.status}] attempts=${unit.attempts}, critic=${typeof unit.criticScore === "number" ? unit.criticScore.toFixed(2) : "n/a"}, verification=${String(unit.verificationPassed)}`
+      )
+    );
+
+    if (observability?.modelUsage?.length) {
+      lines.push(
+        "",
+        "### Model Usage",
+        ...observability.modelUsage.map(
+          (metric) =>
+            `- ${metric.role}/${metric.tier}: calls=${metric.calls}, cacheHits=${metric.cacheHits}, retries=${metric.retries}, escalations=${metric.escalations}, costUnits=${metric.estimatedCostUnits.toFixed(0)}`
+        )
+      );
+    }
+
+    if (observability?.unitMetrics?.length) {
+      const sortedMetrics = [...observability.unitMetrics].sort(
+        (first, second) => second.durationMs - first.durationMs
+      );
+      const maxDuration = Math.max(
+        1,
+        ...sortedMetrics.map((metric) => metric.durationMs || 0)
+      );
+      lines.push(
+        "",
+        "### Unit Timeline",
+        ...sortedMetrics.map((metric) => {
+          const sharePercent = Math.round((metric.durationMs / maxDuration) * 100);
+          return `- ${metric.unitId} [${metric.status}] duration=${formatDuration(metric.durationMs)}, attempts=${metric.attempts}, share=${sharePercent}%`;
+        })
+      );
+    }
+
+    if (observability?.failureHeatmap?.length) {
+      lines.push(
+        "",
+        "### Failure Heatmap",
+        ...observability.failureHeatmap.map(
+          (entry) => `- ${entry.label}: ${entry.count}`
+        )
+      );
+    }
+  }
+
   return lines.join("\n");
 }
 
@@ -454,12 +623,88 @@ function clamp(value: number, min: number, max: number): number {
   return Math.max(min, Math.min(max, Math.floor(value)));
 }
 
+function formatDuration(durationMs: number): string {
+  if (!Number.isFinite(durationMs) || durationMs < 0) return "0ms";
+  if (durationMs < 1000) return `${Math.round(durationMs)}ms`;
+  if (durationMs < 10000) return `${(durationMs / 1000).toFixed(1)}s`;
+  return `${Math.round(durationMs / 1000)}s`;
+}
+
+function toSafeFileToken(value: string): string {
+  const cleaned = value.trim().replace(/[^a-zA-Z0-9_-]+/g, "_");
+  return cleaned.length > 0 ? cleaned : "run";
+}
+
+function buildTelemetryExport(result: AgentRunResult) {
+  return {
+    version: 1,
+    exportedAt: new Date().toISOString(),
+    run: {
+      runId: result.runId || null,
+      resumedFromRunId: result.resumedFromRunId || null,
+      status: result.status,
+      executionMode: result.executionMode,
+      goal: result.goal,
+      model: result.model,
+      startedAt: result.startedAt,
+      finishedAt: result.finishedAt,
+      summary: result.summary,
+      error: result.error || null,
+    },
+    budgets: {
+      maxIterations: result.maxIterations,
+      iterationsUsed: result.iterationsUsed,
+      fileWriteCount: result.fileWriteCount,
+      commandRunCount: result.commandRunCount,
+      strictVerification: result.strictVerification,
+      autoFixVerification: result.autoFixVerification,
+      dryRun: result.dryRun,
+      rollbackOnFailure: result.rollbackOnFailure,
+      rollbackApplied: result.rollbackApplied,
+      rollbackSummary: result.rollbackSummary,
+    },
+    quality: {
+      verificationAttempts: result.verificationAttempts,
+      verificationPassed: result.verificationPassed,
+      verificationCommands: result.verificationCommands,
+      verificationChecks: result.verificationChecks,
+      preflightPassed: result.preflightPassed,
+      preflightChecks: result.preflightChecks,
+      verificationNotes: result.verification,
+      remainingWork: result.remainingWork,
+      zeroKnownIssues: result.zeroKnownIssues,
+    },
+    files: {
+      filesChanged: result.filesChanged,
+      filesChangedCount: result.filesChanged.length,
+      commandsRun: result.commandsRun,
+      changeJournal: result.changeJournal,
+    },
+    project: {
+      digest: result.projectDigest,
+      intelligence: result.projectIntelligence,
+    },
+    team: {
+      teamSize: result.teamSize,
+      teamRoster: result.teamRoster,
+    },
+    clarification: {
+      required: result.clarificationRequired,
+      questions: result.clarificationQuestions,
+      answersUsed: result.clarificationAnswersUsed,
+    },
+    steps: result.steps,
+    multiAgentReport: result.multiAgentReport || null,
+  };
+}
+
 function normalizeRunResult(run: AgentRunResult): AgentRunResult {
   return {
     ...run,
     runId: typeof run.runId === "string" ? run.runId : undefined,
     resumedFromRunId:
       typeof run.resumedFromRunId === "string" ? run.resumedFromRunId : undefined,
+    executionMode: run.executionMode === "single" ? "single" : "multi",
     verification: Array.isArray(run.verification) ? run.verification : [],
     remainingWork: Array.isArray(run.remainingWork) ? run.remainingWork : [],
     filesChanged: Array.isArray(run.filesChanged) ? run.filesChanged : [],
@@ -582,6 +827,60 @@ function normalizeRunResult(run: AgentRunResult): AgentRunResult {
         : null,
     clarificationRequired: Boolean(run.clarificationRequired),
     zeroKnownIssues: Boolean(run.zeroKnownIssues),
+    multiAgentReport:
+      run.multiAgentReport && typeof run.multiAgentReport === "object"
+        ? {
+            strategy:
+              typeof run.multiAgentReport.strategy === "string"
+                ? run.multiAgentReport.strategy
+                : "",
+            finalChecks: Array.isArray(run.multiAgentReport.finalChecks)
+              ? run.multiAgentReport.finalChecks
+              : [],
+            workUnits: Array.isArray(run.multiAgentReport.workUnits)
+              ? run.multiAgentReport.workUnits
+              : [],
+            artifacts: Array.isArray(run.multiAgentReport.artifacts)
+              ? run.multiAgentReport.artifacts
+              : [],
+            flakyQuarantinedCommands: Array.isArray(
+              run.multiAgentReport.flakyQuarantinedCommands
+            )
+              ? run.multiAgentReport.flakyQuarantinedCommands
+              : [],
+            observability:
+              run.multiAgentReport.observability &&
+              typeof run.multiAgentReport.observability === "object"
+                ? {
+                    totalDurationMs:
+                      typeof run.multiAgentReport.observability.totalDurationMs ===
+                      "number"
+                        ? run.multiAgentReport.observability.totalDurationMs
+                        : 0,
+                    modelUsage: Array.isArray(
+                      run.multiAgentReport.observability.modelUsage
+                    )
+                      ? run.multiAgentReport.observability.modelUsage
+                      : [],
+                    unitMetrics: Array.isArray(
+                      run.multiAgentReport.observability.unitMetrics
+                    )
+                      ? run.multiAgentReport.observability.unitMetrics
+                      : [],
+                    failureHeatmap: Array.isArray(
+                      run.multiAgentReport.observability.failureHeatmap
+                    )
+                      ? run.multiAgentReport.observability.failureHeatmap
+                      : [],
+                  }
+                : {
+                    totalDurationMs: 0,
+                    modelUsage: [],
+                    unitMetrics: [],
+                    failureHeatmap: [],
+                  },
+          }
+        : undefined,
   };
 }
 
@@ -681,6 +980,20 @@ function listActionPaths(action: AgentAction): string[] {
   }
 }
 
+function resolveAgentStreamEndpoint(): string {
+  const configured = process.env.NEXT_PUBLIC_BACKEND_API_ORIGIN;
+  if (typeof configured !== "string" || configured.trim().length === 0) {
+    return "/api/agent/stream";
+  }
+
+  const normalizedOrigin = configured.trim().replace(/\/+$/, "");
+  if (!normalizedOrigin) {
+    return "/api/agent/stream";
+  }
+
+  return `${normalizedOrigin}/api/agent/stream`;
+}
+
 function flattenTreeFiles(nodes: FileTreeNode[]): string[] {
   const files: string[] = [];
 
@@ -727,8 +1040,22 @@ export default function AutonomousPanel({
   const [workspaceFiles, setWorkspaceFiles] = useState<string[]>([]);
   const [workspaceLoading, setWorkspaceLoading] = useState(false);
   const [workspaceError, setWorkspaceError] = useState<string | null>(null);
+  const [memoryEntries, setMemoryEntries] = useState<LongTermMemoryEntry[]>([]);
+  const [latestContinuation, setLatestContinuation] = useState<ContinuationPacket | null>(
+    null
+  );
+  const [memoryQuery, setMemoryQuery] = useState("");
+  const [memoryContextBlock, setMemoryContextBlock] = useState("");
+  const [memoryDiagnostics, setMemoryDiagnostics] =
+    useState<MemoryRetrievalDiagnostics | null>(null);
+  const [memoryLoading, setMemoryLoading] = useState(false);
+  const [memoryRetrieveLoading, setMemoryRetrieveLoading] = useState(false);
+  const [memoryError, setMemoryError] = useState<string | null>(null);
+  const [memoryImportMode, setMemoryImportMode] = useState<"merge" | "replace">("merge");
 
   const controllerRef = useRef<AbortController | null>(null);
+  const memoryImportInputRef = useRef<HTMLInputElement | null>(null);
+  const agentStreamEndpoint = useMemo(() => resolveAgentStreamEndpoint(), []);
 
   useEffect(() => {
     if (typeof window === "undefined") return;
@@ -872,6 +1199,197 @@ export default function AutonomousPanel({
   const missingRequiredClarificationCount = pendingClarificationQuestions.filter(
     (question) => question.required && !(clarificationAnswers[question.id] || "").trim()
   ).length;
+  const unitTimelineMetrics = useMemo(() => {
+    const metrics = result?.multiAgentReport?.observability?.unitMetrics || [];
+    if (metrics.length === 0) {
+      return [];
+    }
+    const sorted = [...metrics].sort(
+      (first, second) => second.durationMs - first.durationMs
+    );
+    const maxDuration = Math.max(1, ...sorted.map((metric) => metric.durationMs || 0));
+    return sorted.map((metric) => ({
+      ...metric,
+      widthPercent: Math.max(
+        3,
+        Math.min(100, Math.round(((metric.durationMs || 0) / maxDuration) * 100))
+      ),
+    }));
+  }, [result]);
+
+  function downloadTelemetryJson(run: AgentRunResult) {
+    if (typeof window === "undefined") return;
+    const payload = buildTelemetryExport(run);
+    const blob = new Blob([JSON.stringify(payload, null, 2)], {
+      type: "application/json",
+    });
+    const url = URL.createObjectURL(blob);
+    const anchor = document.createElement("a");
+    const runToken = toSafeFileToken(run.runId || run.finishedAt || "run");
+    anchor.href = url;
+    anchor.download = `sorcerer-telemetry-${runToken}.json`;
+    document.body.appendChild(anchor);
+    anchor.click();
+    document.body.removeChild(anchor);
+    URL.revokeObjectURL(url);
+  }
+
+  const callMemoryApi = useCallback(
+    async <T,>(payload: Record<string, unknown>): Promise<T> => {
+      const response = await fetch("/api/memory", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          ...payload,
+          workspacePath,
+        }),
+      });
+      const data = (await response.json().catch(() => ({}))) as T & { error?: string };
+      if (!response.ok) {
+        throw new Error(data.error || `Memory API failed (${response.status})`);
+      }
+      return data;
+    },
+    [workspacePath]
+  );
+
+  const refreshMemoryList = useCallback(async () => {
+    setMemoryLoading(true);
+    setMemoryError(null);
+    try {
+      const data = await callMemoryApi<{
+        entries?: LongTermMemoryEntry[];
+        latestContinuation?: ContinuationPacket | null;
+      }>({
+        action: "list",
+      });
+      setMemoryEntries(Array.isArray(data.entries) ? data.entries : []);
+      setLatestContinuation(data.latestContinuation || null);
+    } catch (err) {
+      setMemoryError(err instanceof Error ? err.message : "Failed to load memory");
+    } finally {
+      setMemoryLoading(false);
+    }
+  }, [callMemoryApi]);
+
+  async function retrieveMemoryContextForQuery() {
+    const query = memoryQuery.trim();
+    if (!query) return;
+    setMemoryRetrieveLoading(true);
+    setMemoryError(null);
+    try {
+      const data = await callMemoryApi<{
+        contextBlock?: string;
+        diagnostics?: MemoryRetrievalDiagnostics;
+        latestContinuation?: ContinuationPacket | null;
+      }>({
+        action: "retrieve",
+        query,
+        limit: 8,
+        maxChars: 2600,
+        includePinned: true,
+      });
+      setMemoryContextBlock(
+        typeof data.contextBlock === "string" && data.contextBlock.length > 0
+          ? data.contextBlock
+          : "(no memory context returned)"
+      );
+      setMemoryDiagnostics(data.diagnostics || null);
+      setLatestContinuation(data.latestContinuation || null);
+    } catch (err) {
+      setMemoryError(err instanceof Error ? err.message : "Memory retrieval failed");
+    } finally {
+      setMemoryRetrieveLoading(false);
+    }
+  }
+
+  async function toggleMemoryPin(entry: LongTermMemoryEntry) {
+    setMemoryError(null);
+    try {
+      await callMemoryApi<{ updated: boolean }>({
+        action: "pin",
+        memoryId: entry.id,
+        pinned: !entry.pinned,
+      });
+      setMemoryEntries((prev) =>
+        prev.map((candidate) =>
+          candidate.id === entry.id
+            ? {
+                ...candidate,
+                pinned: !entry.pinned,
+              }
+            : candidate
+        )
+      );
+    } catch (err) {
+      setMemoryError(err instanceof Error ? err.message : "Failed to toggle pin");
+    }
+  }
+
+  async function forgetMemory(entryId: string) {
+    setMemoryError(null);
+    try {
+      await callMemoryApi<{ removed: boolean }>({
+        action: "forget",
+        memoryId: entryId,
+      });
+      setMemoryEntries((prev) => prev.filter((entry) => entry.id !== entryId));
+    } catch (err) {
+      setMemoryError(err instanceof Error ? err.message : "Failed to remove memory");
+    }
+  }
+
+  async function exportMemoryJson() {
+    if (typeof window === "undefined") return;
+    setMemoryError(null);
+    try {
+      const data = await callMemoryApi<{ store?: unknown }>({
+        action: "export",
+      });
+      const payload = JSON.stringify(data.store || {}, null, 2);
+      const blob = new Blob([payload], { type: "application/json" });
+      const url = URL.createObjectURL(blob);
+      const anchor = document.createElement("a");
+      anchor.href = url;
+      anchor.download = `sorcerer-memory-${toSafeFileToken(
+        result?.runId || new Date().toISOString()
+      )}.json`;
+      document.body.appendChild(anchor);
+      anchor.click();
+      document.body.removeChild(anchor);
+      URL.revokeObjectURL(url);
+    } catch (err) {
+      setMemoryError(err instanceof Error ? err.message : "Failed to export memory");
+    }
+  }
+
+  async function importMemoryJson(file: File, mode: "merge" | "replace") {
+    setMemoryError(null);
+    try {
+      const raw = await file.text();
+      const payload = JSON.parse(raw);
+      await callMemoryApi<{ imported: number; replaced: boolean }>({
+        action: "import",
+        mode,
+        payload,
+      });
+      await refreshMemoryList();
+      setMemoryContextBlock("");
+      setMemoryDiagnostics(null);
+    } catch (err) {
+      setMemoryError(err instanceof Error ? err.message : "Failed to import memory");
+    }
+  }
+
+  useEffect(() => {
+    if (!open) return;
+    void refreshMemoryList();
+  }, [open, refreshMemoryList]);
+
+  useEffect(() => {
+    if (!result?.finishedAt) return;
+    void refreshMemoryList();
+  }, [result?.finishedAt, refreshMemoryList]);
 
   function updateSettings<K extends keyof AgentSettings>(key: K, value: AgentSettings[K]) {
     setSettings((prev) => ({
@@ -889,7 +1407,7 @@ export default function AutonomousPanel({
     switch (event.type) {
       case "started":
         setStatusMessage(
-          `Started with model ${event.data.model}. teamSize=${event.data.teamSize}, strictVerification=${event.data.strictVerification}, preflight=${event.data.runPreflightChecks}, clarificationGate=${event.data.requireClarificationBeforeEdits}`
+          `Started with model ${event.data.model}. mode=${event.data.executionMode}, teamSize=${event.data.teamSize}, strictVerification=${event.data.strictVerification}, preflight=${event.data.runPreflightChecks}, clarificationGate=${event.data.requireClarificationBeforeEdits}`
         );
         break;
       case "status":
@@ -969,11 +1487,12 @@ export default function AutonomousPanel({
     controllerRef.current = controller;
 
     try {
-      const response = await fetch("/api/agent/stream", {
+      const response = await fetch(agentStreamEndpoint, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           goal: goal.trim(),
+          executionMode: settings.executionMode,
           model: settings.modelOverride.trim() || undefined,
           workspacePath,
           skillFiles:
@@ -992,6 +1511,8 @@ export default function AutonomousPanel({
           verificationCommands: verificationCommands.length > 0 ? verificationCommands : undefined,
           maxFileWrites: settings.maxFileWrites,
           maxCommandRuns: settings.maxCommandRuns,
+          maxParallelWorkUnits: settings.maxParallelWorkUnits,
+          criticPassThreshold: settings.criticPassThreshold,
         }),
         signal: controller.signal,
       });
@@ -1123,6 +1644,23 @@ export default function AutonomousPanel({
           />
 
           <div className="flex flex-wrap items-center gap-3">
+            <label className="flex items-center gap-2 text-xs text-neutral-500">
+              <span>Execution mode</span>
+              <select
+                value={settings.executionMode}
+                onChange={(event) =>
+                  updateSettings(
+                    "executionMode",
+                    event.target.value === "single" ? "single" : "multi"
+                  )
+                }
+                className="rounded-lg border border-neutral-300 dark:border-neutral-700 bg-white dark:bg-neutral-900 px-2 py-1 text-sm"
+                disabled={running}
+              >
+                <option value="multi">Multi-agent async</option>
+                <option value="single">Single-agent (legacy)</option>
+              </select>
+            </label>
             <label className="flex items-center gap-2 text-xs text-neutral-500">
               <span>Max iterations</span>
               <input
@@ -1308,6 +1846,43 @@ export default function AutonomousPanel({
                   disabled={running}
                 />
               </label>
+              <label className="flex items-center justify-between gap-2 text-xs md:col-span-1">
+                <span>Max parallel work units</span>
+                <input
+                  type="number"
+                  min={1}
+                  max={8}
+                  value={settings.maxParallelWorkUnits}
+                  onChange={(event) => {
+                    const value = Number(event.target.value);
+                    if (!Number.isFinite(value)) return;
+                    updateSettings("maxParallelWorkUnits", clamp(value, 1, 8));
+                  }}
+                  className="w-20 rounded border border-neutral-300 dark:border-neutral-700 px-2 py-1 bg-white dark:bg-neutral-900"
+                  disabled={running || settings.executionMode !== "multi"}
+                />
+              </label>
+
+              <label className="flex items-center justify-between gap-2 text-xs md:col-span-1">
+                <span>Critic pass threshold</span>
+                <input
+                  type="number"
+                  min={0.2}
+                  max={0.95}
+                  step={0.01}
+                  value={settings.criticPassThreshold}
+                  onChange={(event) => {
+                    const value = Number(event.target.value);
+                    if (!Number.isFinite(value)) return;
+                    updateSettings(
+                      "criticPassThreshold",
+                      Math.max(0.2, Math.min(0.95, value))
+                    );
+                  }}
+                  className="w-20 rounded border border-neutral-300 dark:border-neutral-700 px-2 py-1 bg-white dark:bg-neutral-900"
+                  disabled={running || settings.executionMode !== "multi"}
+                />
+              </label>
 
               <label className="flex flex-col gap-1 text-xs md:col-span-2">
                 <span className="text-neutral-500">Model override (optional)</span>
@@ -1371,6 +1946,7 @@ export default function AutonomousPanel({
                     <div className="mt-3 text-xs text-neutral-500 space-y-1">
                       <div>Run ID: <span className="font-mono">{result.runId || "(unknown)"}</span></div>
                       <div>Resumed from: <span className="font-mono">{result.resumedFromRunId || "(fresh run)"}</span></div>
+                      <div>Execution mode: <span className="font-mono">{result.executionMode}</span></div>
                       <div>Team size: <span className="font-mono">{result.teamSize}</span></div>
                       <div>Run preflight checks: <span className="font-mono">{String(result.runPreflightChecks)}</span></div>
                       <div>Preflight passed: <span className="font-mono">{String(result.preflightPassed)}</span></div>
@@ -1382,6 +1958,11 @@ export default function AutonomousPanel({
                       <div>Verification passed: <span className="font-mono">{String(result.verificationPassed)}</span></div>
                       <div>Rollback on failure: <span className="font-mono">{String(result.rollbackOnFailure)}</span></div>
                       <div>Rollback applied: <span className="font-mono">{String(result.rollbackApplied)}</span></div>
+                      {result.multiAgentReport && (
+                        <div>
+                          Work units: <span className="font-mono">{result.multiAgentReport.workUnits.length}</span>
+                        </div>
+                      )}
                     </div>
                   )}
 
@@ -1400,13 +1981,109 @@ export default function AutonomousPanel({
                     </div>
                   ) : null}
 
-                  {onPublishReport && result && (
-                    <button
-                      onClick={() => onPublishReport(formatRunReport(result))}
-                      className="mt-4 px-3 py-2 rounded-lg border border-neutral-300 dark:border-neutral-700 hover:bg-neutral-100 dark:hover:bg-neutral-800 text-sm transition-colors cursor-pointer"
-                    >
-                      Publish Report To Chat
-                    </button>
+                  {result?.multiAgentReport?.observability && (
+                    <div className="mt-3">
+                      <div className="text-xs font-semibold uppercase tracking-wider text-neutral-500 mb-1">
+                        Multi-Agent Observability
+                      </div>
+                      <div className="text-xs text-neutral-500 space-y-1">
+                        <div>
+                          Total runtime:{" "}
+                          <span className="font-mono">
+                            {Math.round(
+                              result.multiAgentReport.observability.totalDurationMs / 1000
+                            )}
+                            s
+                          </span>
+                        </div>
+                        <div>
+                          Flaky quarantined commands:{" "}
+                          <span className="font-mono">
+                            {result.multiAgentReport.flakyQuarantinedCommands.join(", ") ||
+                              "(none)"}
+                          </span>
+                        </div>
+                      </div>
+
+                      {result.multiAgentReport.observability.modelUsage.length > 0 && (
+                        <ul className="mt-2 space-y-1 text-xs font-mono">
+                          {result.multiAgentReport.observability.modelUsage.map((metric) => (
+                            <li key={`${metric.role}-${metric.tier}`}>
+                              {metric.role}/{metric.tier} calls={metric.calls} retries=
+                              {metric.retries} cache={metric.cacheHits} escalations=
+                              {metric.escalations} cost={metric.estimatedCostUnits.toFixed(0)}
+                            </li>
+                          ))}
+                        </ul>
+                      )}
+
+                      {result.multiAgentReport.observability.failureHeatmap.length > 0 && (
+                        <ul className="mt-2 space-y-1 text-xs font-mono">
+                          {result.multiAgentReport.observability.failureHeatmap
+                            .slice(0, 6)
+                            .map((entry) => (
+                              <li key={entry.label}>
+                                {entry.label}: {entry.count}
+                              </li>
+                            ))}
+                        </ul>
+                      )}
+
+                      {unitTimelineMetrics.length > 0 && (
+                        <div className="mt-3 space-y-1.5">
+                          <div className="text-xs font-semibold uppercase tracking-wider text-neutral-500">
+                            Unit Timeline
+                          </div>
+                          {unitTimelineMetrics.map((metric) => (
+                            <div
+                              key={`${metric.unitId}-${metric.attempts}`}
+                              className="rounded border border-neutral-200 dark:border-neutral-800 p-2"
+                            >
+                              <div className="flex items-center justify-between gap-2 text-[11px] font-mono">
+                                <span className="truncate">
+                                  {metric.unitId} [{metric.status}]
+                                </span>
+                                <span>
+                                  {formatDuration(metric.durationMs)} | tries={metric.attempts}
+                                </span>
+                              </div>
+                              <div className="mt-1 h-1.5 rounded bg-neutral-200 dark:bg-neutral-800 overflow-hidden">
+                                <div
+                                  className={`h-full ${
+                                    metric.status === "completed"
+                                      ? "bg-emerald-500"
+                                      : metric.status === "failed" ||
+                                          metric.status === "blocked"
+                                        ? "bg-red-500"
+                                        : "bg-amber-500"
+                                  }`}
+                                  style={{ width: `${metric.widthPercent}%` }}
+                                />
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  )}
+
+                  {result && (
+                    <div className="mt-4 flex flex-wrap items-center gap-2">
+                      {onPublishReport && (
+                        <button
+                          onClick={() => onPublishReport(formatRunReport(result))}
+                          className="px-3 py-2 rounded-lg border border-neutral-300 dark:border-neutral-700 hover:bg-neutral-100 dark:hover:bg-neutral-800 text-sm transition-colors cursor-pointer"
+                        >
+                          Publish Report To Chat
+                        </button>
+                      )}
+                      <button
+                        onClick={() => downloadTelemetryJson(result)}
+                        className="px-3 py-2 rounded-lg border border-neutral-300 dark:border-neutral-700 hover:bg-neutral-100 dark:hover:bg-neutral-800 text-sm transition-colors cursor-pointer"
+                      >
+                        Export Telemetry JSON
+                      </button>
+                    </div>
                   )}
                 </div>
 
@@ -1871,6 +2548,180 @@ export default function AutonomousPanel({
           </div>
 
           <aside className="min-h-0 overflow-y-auto p-5 space-y-3 bg-neutral-50 dark:bg-neutral-900/30">
+            <div className="rounded-xl border border-neutral-200 dark:border-neutral-800 bg-white dark:bg-neutral-900 p-3 space-y-2">
+              <div className="flex items-center justify-between gap-2">
+                <h3 className="text-sm font-semibold">Long-term Memory</h3>
+                <button
+                  onClick={() => void refreshMemoryList()}
+                  className="text-xs px-2 py-1 rounded border border-neutral-300 dark:border-neutral-700 hover:bg-neutral-100 dark:hover:bg-neutral-800 transition-colors cursor-pointer"
+                  disabled={memoryLoading}
+                >
+                  {memoryLoading ? "Loading..." : "Refresh"}
+                </button>
+              </div>
+
+              <div className="flex items-center gap-2">
+                <input
+                  type="text"
+                  value={memoryQuery}
+                  onChange={(event) => setMemoryQuery(event.target.value)}
+                  onKeyDown={(event) => {
+                    if (event.key === "Enter") {
+                      event.preventDefault();
+                      void retrieveMemoryContextForQuery();
+                    }
+                  }}
+                  placeholder="Retrieve memory by query..."
+                  className="min-w-0 flex-1 rounded border border-neutral-300 dark:border-neutral-700 px-2 py-1 text-xs bg-white dark:bg-neutral-950"
+                />
+                <button
+                  onClick={() => void retrieveMemoryContextForQuery()}
+                  className="text-xs px-2 py-1 rounded border border-neutral-300 dark:border-neutral-700 hover:bg-neutral-100 dark:hover:bg-neutral-800 transition-colors cursor-pointer"
+                  disabled={memoryRetrieveLoading || memoryQuery.trim().length === 0}
+                >
+                  {memoryRetrieveLoading ? "..." : "Retrieve"}
+                </button>
+              </div>
+
+              <div className="flex items-center gap-2">
+                <button
+                  onClick={() => void exportMemoryJson()}
+                  className="text-xs px-2 py-1 rounded border border-neutral-300 dark:border-neutral-700 hover:bg-neutral-100 dark:hover:bg-neutral-800 transition-colors cursor-pointer"
+                >
+                  Export
+                </button>
+                <select
+                  value={memoryImportMode}
+                  onChange={(event) =>
+                    setMemoryImportMode(event.target.value === "replace" ? "replace" : "merge")
+                  }
+                  className="min-w-0 flex-1 rounded border border-neutral-300 dark:border-neutral-700 px-2 py-1 text-xs bg-white dark:bg-neutral-950"
+                >
+                  <option value="merge">Import merge</option>
+                  <option value="replace">Import replace</option>
+                </select>
+                <button
+                  onClick={() => memoryImportInputRef.current?.click()}
+                  className="text-xs px-2 py-1 rounded border border-neutral-300 dark:border-neutral-700 hover:bg-neutral-100 dark:hover:bg-neutral-800 transition-colors cursor-pointer"
+                >
+                  Import
+                </button>
+                <input
+                  ref={memoryImportInputRef}
+                  type="file"
+                  accept="application/json"
+                  className="hidden"
+                  onChange={(event) => {
+                    const file = event.target.files?.[0];
+                    event.target.value = "";
+                    if (!file) return;
+                    void importMemoryJson(file, memoryImportMode);
+                  }}
+                />
+              </div>
+
+              {memoryError && (
+                <p className="text-xs text-red-600 dark:text-red-400">{memoryError}</p>
+              )}
+
+              {latestContinuation && (
+                <details className="rounded border border-neutral-200 dark:border-neutral-800 px-2 py-1">
+                  <summary className="cursor-pointer text-xs text-neutral-500">
+                    Latest continuation ({latestContinuation.executionMode})
+                  </summary>
+                  <div className="mt-1 space-y-1 text-[11px]">
+                    <div>Run: <span className="font-mono">{latestContinuation.runId}</span></div>
+                    <div>Goal: <span className="font-mono">{latestContinuation.goal}</span></div>
+                    <div>Summary: <span className="font-mono">{latestContinuation.summary}</span></div>
+                  </div>
+                </details>
+              )}
+
+              {memoryContextBlock && (
+                <details className="rounded border border-neutral-200 dark:border-neutral-800 px-2 py-1">
+                  <summary className="cursor-pointer text-xs text-neutral-500">
+                    Retrieved context preview
+                  </summary>
+                  <pre className="mt-1 text-[11px] rounded bg-neutral-100 dark:bg-neutral-950 p-2 max-h-44 overflow-auto whitespace-pre-wrap">
+                    {memoryContextBlock}
+                  </pre>
+                </details>
+              )}
+
+              {memoryDiagnostics && (
+                <div className="rounded border border-neutral-200 dark:border-neutral-800 px-2 py-1 text-[11px] space-y-1">
+                  <div>
+                    conflicts:{" "}
+                    <span className="font-mono">{memoryDiagnostics.conflictCount}</span>
+                  </div>
+                  <div>
+                    evidence gate:{" "}
+                    <span className="font-mono">
+                      {String(memoryDiagnostics.requiresVerificationBeforeMutation)}
+                    </span>
+                  </div>
+                  {memoryDiagnostics.guidance.length > 0 && (
+                    <ul className="list-disc list-inside text-neutral-500">
+                      {memoryDiagnostics.guidance.slice(0, 2).map((item, index) => (
+                        <li key={`memory-guidance-${index}`}>{item}</li>
+                      ))}
+                    </ul>
+                  )}
+                </div>
+              )}
+
+              {memoryEntries.length === 0 ? (
+                <p className="text-xs text-neutral-400">
+                  {memoryLoading ? "Loading memory..." : "No memory entries yet."}
+                </p>
+              ) : (
+                <div className="space-y-2 max-h-80 overflow-auto pr-1">
+                  {memoryEntries.slice(0, 24).map((entry) => (
+                    <div
+                      key={entry.id}
+                      className="rounded border border-neutral-200 dark:border-neutral-800 p-2 bg-neutral-50 dark:bg-neutral-950"
+                    >
+                      <div className="flex items-center justify-between gap-2">
+                        <span className="text-[11px] font-medium truncate">
+                          {entry.title}
+                        </span>
+                        <span className="text-[10px] text-neutral-500">
+                          {entry.type}
+                        </span>
+                      </div>
+                      <p className="mt-1 text-[11px] text-neutral-600 dark:text-neutral-300 line-clamp-3">
+                        {entry.content}
+                      </p>
+                      <div className="mt-2 flex items-center justify-between gap-2">
+                        <span className="text-[10px] text-neutral-500">
+                          confidence=
+                          {(typeof entry.confidenceScore === "number"
+                            ? entry.confidenceScore
+                            : entry.successScore
+                          ).toFixed(2)}{" "}
+                          uses={entry.useCount}
+                        </span>
+                        <div className="flex items-center gap-1">
+                          <button
+                            onClick={() => void toggleMemoryPin(entry)}
+                            className="text-[10px] px-1.5 py-1 rounded border border-neutral-300 dark:border-neutral-700 hover:bg-neutral-100 dark:hover:bg-neutral-800 cursor-pointer"
+                          >
+                            {entry.pinned ? "Unpin" : "Pin"}
+                          </button>
+                          <button
+                            onClick={() => void forgetMemory(entry.id)}
+                            className="text-[10px] px-1.5 py-1 rounded border border-red-300 text-red-600 dark:border-red-800 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-950/40 cursor-pointer"
+                          >
+                            Forget
+                          </button>
+                        </div>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+
             <div className="flex items-center justify-between">
               <h3 className="text-sm font-semibold">Recent Runs</h3>
               {history.length > 0 && (
@@ -1920,6 +2771,12 @@ export default function AutonomousPanel({
                           Publish
                         </button>
                       )}
+                      <button
+                        onClick={() => downloadTelemetryJson(item)}
+                        className="text-xs px-2 py-1 rounded border border-neutral-300 dark:border-neutral-700 hover:bg-neutral-100 dark:hover:bg-neutral-800 transition-colors cursor-pointer"
+                      >
+                        Export JSON
+                      </button>
                     </div>
                   </div>
                 ))}
