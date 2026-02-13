@@ -344,6 +344,7 @@ interface AutonomousPanelProps {
 
 const SETTINGS_STORAGE_KEY = "autonomous-agent-settings-v2";
 const HISTORY_STORAGE_KEY = "autonomous-agent-history-v1";
+const UI_MODE_STORAGE_KEY = "autonomous-agent-ui-mode-v1";
 const MAX_HISTORY_ITEMS = 12;
 
 const DEFAULT_SETTINGS: AgentSettings = {
@@ -1062,6 +1063,13 @@ export default function AutonomousPanel({
   const [goal, setGoal] = useState("");
   const [settings, setSettings] = useState<AgentSettings>(DEFAULT_SETTINGS);
   const [showAdvanced, setShowAdvanced] = useState(false);
+  const [expertMode, setExpertMode] = useState(false);
+  const [activityOpen, setActivityOpen] = useState(false);
+  const [runDetailsOpen, setRunDetailsOpen] = useState(false);
+  const [projectOpen, setProjectOpen] = useState(false);
+  const [workspaceOpen, setWorkspaceOpen] = useState(false);
+  const [historyOpen, setHistoryOpen] = useState(true);
+  const [memoryOpen, setMemoryOpen] = useState(false);
 
   const [running, setRunning] = useState(false);
   const [statusMessage, setStatusMessage] = useState<string | null>(null);
@@ -1092,7 +1100,8 @@ export default function AutonomousPanel({
   const controllerRef = useRef<AbortController | null>(null);
   const memoryImportInputRef = useRef<HTMLInputElement | null>(null);
   const agentStreamEndpoint = useMemo(() => resolveAgentStreamEndpoint(), []);
-
+  const steps: AgentStep[] = result ? result.steps : liveSteps;
+  const hasFailedStep = steps.some((step) => !step.ok);
   useEffect(() => {
     if (typeof window === "undefined") return;
 
@@ -1113,6 +1122,11 @@ export default function AutonomousPanel({
     if (Array.isArray(savedHistory)) {
       setHistory(savedHistory.map(normalizeRunResult).slice(0, MAX_HISTORY_ITEMS));
     }
+
+    const savedUiMode = localStorage.getItem(UI_MODE_STORAGE_KEY);
+    if (savedUiMode === "advanced") {
+      setExpertMode(true);
+    }
   }, []);
 
   useEffect(() => {
@@ -1127,6 +1141,27 @@ export default function AutonomousPanel({
       JSON.stringify(history.slice(0, MAX_HISTORY_ITEMS))
     );
   }, [history]);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    localStorage.setItem(UI_MODE_STORAGE_KEY, expertMode ? "advanced" : "simple");
+  }, [expertMode]);
+
+  useEffect(() => {
+    if (expertMode) {
+      setActivityOpen(true);
+      setRunDetailsOpen(true);
+      setProjectOpen(true);
+      setWorkspaceOpen(true);
+      setMemoryOpen(true);
+    }
+  }, [expertMode]);
+
+  useEffect(() => {
+    if (running || hasFailedStep) {
+      setActivityOpen(true);
+    }
+  }, [running, hasFailedStep]);
 
   useEffect(() => {
     if (!open) return;
@@ -1652,345 +1687,408 @@ export default function AutonomousPanel({
 
   if (!open) return null;
 
+  const runStatusLabel = result
+    ? result.status.replace("_", " ")
+    : running
+      ? "running"
+      : "idle";
+
+  const cardClass =
+    "rounded-2xl border border-black/10 dark:border-white/10 bg-white/80 dark:bg-neutral-950/70 backdrop-blur-sm shadow-[0_12px_30px_rgba(15,23,42,0.08)]";
+  const cardHeaderClass =
+    "px-4 py-3 border-b border-black/10 dark:border-white/10 text-sm font-semibold";
+  const cardBodyClass = "p-4";
+  const summaryClass =
+    "cursor-pointer text-sm font-semibold text-neutral-700 dark:text-neutral-200";
+
   const panel = (
     <section
       className={
         embedded
-          ? "h-dvh w-full bg-white dark:bg-neutral-950 flex flex-col"
-          : "fixed inset-y-0 right-0 z-50 w-full max-w-5xl bg-white dark:bg-neutral-950 border-l border-neutral-200 dark:border-neutral-800 shadow-2xl flex flex-col"
+          ? "h-dvh w-full flex flex-col"
+          : "fixed inset-y-0 right-0 z-50 w-full max-w-5xl border-l border-black/10 dark:border-white/10 bg-white/80 dark:bg-neutral-950/80 shadow-2xl flex flex-col"
       }
     >
-        <header className="px-5 py-4 border-b border-neutral-200 dark:border-neutral-800 flex items-center justify-between">
+      <header className="border-b border-black/10 dark:border-white/10 bg-white/70 dark:bg-neutral-950/80 backdrop-blur">
+        <div className="px-6 py-4 flex flex-wrap items-center justify-between gap-4">
           <div>
-            <h2 className="text-base font-semibold">
-              {(botName || "Assistant").trim()} Autonomous Programming Agent
+            <p className="text-[11px] uppercase tracking-[0.3em] text-neutral-500">
+              Autonomous Agent
+            </p>
+            <h2 className="text-lg font-semibold text-neutral-900 dark:text-neutral-100">
+              {(botName || "Assistant").trim()} Run Console
             </h2>
-            <p className="text-xs text-neutral-500 mt-1">
+            <p className="text-xs text-neutral-500">
               Live planning, code edits, quality gates, and completion tracking.
             </p>
           </div>
-          {!embedded && onClose && (
-            <button
-              onClick={onClose}
-              className="p-2 rounded-lg hover:bg-neutral-100 dark:hover:bg-neutral-800 transition-colors cursor-pointer"
-              title="Close"
-            >
-              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                <line x1="18" y1="6" x2="6" y2="18" />
-                <line x1="6" y1="6" x2="18" y2="18" />
-              </svg>
-            </button>
-          )}
-        </header>
-
-        <div className="px-5 py-4 border-b border-neutral-200 dark:border-neutral-800 bg-neutral-50 dark:bg-neutral-900/40 space-y-3">
-          <label className="block text-xs font-medium text-neutral-500">Goal</label>
-          <p className="text-[11px] text-neutral-500 font-mono">
-            Workspace: {workspacePath?.trim() || "(default workspace)"}
-          </p>
-          <textarea
-            value={goal}
-            onChange={(event) => setGoal(event.target.value)}
-            placeholder="Example: Implement JWT auth, migrate DB schema, add tests, run lint/typecheck/build, and resolve all failures."
-            className="w-full min-h-[120px] max-h-64 resize-y rounded-xl border border-neutral-300 dark:border-neutral-700 bg-white dark:bg-neutral-900 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
-            disabled={running}
-          />
-
-          <div className="flex flex-wrap items-center gap-3">
-            <label className="flex items-center gap-2 text-xs text-neutral-500">
-              <span>Execution mode</span>
-              <select
-                value={settings.executionMode}
-                onChange={(event) =>
-                  updateSettings(
-                    "executionMode",
-                    event.target.value === "single" ? "single" : "multi"
-                  )
-                }
-                className="rounded-lg border border-neutral-300 dark:border-neutral-700 bg-white dark:bg-neutral-900 px-2 py-1 text-sm"
-                disabled={running}
-              >
-                <option value="multi">Multi-agent async</option>
-                <option value="single">Single-agent (legacy)</option>
-              </select>
-            </label>
-            <label className="flex items-center gap-2 text-xs text-neutral-500">
-              <span>Max iterations</span>
-              <input
-                type="number"
-                min={2}
-                max={40}
-                value={settings.maxIterations}
-                onChange={(event) => {
-                  const value = Number(event.target.value);
-                  if (!Number.isFinite(value)) return;
-                  updateSettings("maxIterations", clamp(value, 2, 40));
-                }}
-                className="w-20 rounded-lg border border-neutral-300 dark:border-neutral-700 bg-white dark:bg-neutral-900 px-2 py-1 text-sm"
-                disabled={running}
-              />
-            </label>
-            <label className="flex items-center gap-2 text-xs text-neutral-500">
-              <span>Team size</span>
-              <input
-                type="number"
-                min={1}
-                max={100}
-                value={settings.teamSize}
-                onChange={(event) => {
-                  const value = Number(event.target.value);
-                  if (!Number.isFinite(value)) return;
-                  updateSettings("teamSize", clamp(value, 1, 100));
-                }}
-                className="w-20 rounded-lg border border-neutral-300 dark:border-neutral-700 bg-white dark:bg-neutral-900 px-2 py-1 text-sm"
-                disabled={running}
-              />
-            </label>
-
-            <button
-              onClick={() => setShowAdvanced((value) => !value)}
-              className="text-xs px-2.5 py-1.5 rounded-lg border border-neutral-300 dark:border-neutral-700 hover:bg-neutral-100 dark:hover:bg-neutral-800 transition-colors cursor-pointer"
-              type="button"
-            >
-              {showAdvanced ? "Hide Advanced" : "Show Advanced"}
-            </button>
-
-            <button
-              onClick={applyCodingDefaults}
-              disabled={running}
-              className="text-xs px-2.5 py-1.5 rounded-lg border border-blue-300 text-blue-700 dark:border-blue-700 dark:text-blue-300 hover:bg-blue-50 dark:hover:bg-blue-900/20 transition-colors cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
-              type="button"
-            >
-              Coding Defaults
-            </button>
-
-            <button
-              onClick={runAutonomousAgent}
-              disabled={!canRun}
-              className="inline-flex items-center gap-1.5 px-3 py-2 rounded-xl bg-blue-600 text-white text-sm font-medium hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors cursor-pointer"
-            >
-              {running ? (
-                <>
-                  <svg className="animate-spin w-4 h-4" viewBox="0 0 24 24" fill="none">
-                    <circle cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="3" className="opacity-25" />
-                    <path d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" fill="currentColor" className="opacity-75" />
-                  </svg>
-                  Running...
-                </>
-              ) : (
-                <>
-                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                    <polygon points="5 3 19 12 5 21 5 3" />
-                  </svg>
-                  Start Autonomous Run
-                </>
-              )}
-            </button>
-
-            {running && (
+          <div className="flex items-center gap-3">
+            <div className="inline-flex rounded-full border border-black/10 dark:border-white/10 bg-white/80 dark:bg-neutral-900/70 p-1 text-xs">
               <button
-                onClick={cancelRun}
-                className="inline-flex items-center gap-1.5 px-3 py-2 rounded-xl border border-neutral-300 dark:border-neutral-700 text-sm hover:bg-neutral-100 dark:hover:bg-neutral-800 transition-colors cursor-pointer"
+                type="button"
+                onClick={() => setExpertMode(false)}
+                className={`px-3 py-1 rounded-full transition-colors cursor-pointer ${
+                  !expertMode
+                    ? "bg-emerald-600 text-white"
+                    : "text-neutral-600 dark:text-neutral-300 hover:bg-black/5 dark:hover:bg-white/10"
+                }`}
+                aria-pressed={!expertMode}
               >
-                Cancel
+                Simple
+              </button>
+              <button
+                type="button"
+                onClick={() => setExpertMode(true)}
+                className={`px-3 py-1 rounded-full transition-colors cursor-pointer ${
+                  expertMode
+                    ? "bg-emerald-600 text-white"
+                    : "text-neutral-600 dark:text-neutral-300 hover:bg-black/5 dark:hover:bg-white/10"
+                }`}
+                aria-pressed={expertMode}
+              >
+                Expert
+              </button>
+            </div>
+            <span
+              className={`inline-flex items-center px-2.5 py-1 rounded-full text-xs font-medium ${currentStatusBadge}`}
+            >
+              {runStatusLabel}
+            </span>
+            {!embedded && onClose && (
+              <button
+                onClick={onClose}
+                className="p-2 rounded-lg hover:bg-black/5 dark:hover:bg-white/10 transition-colors cursor-pointer"
+                title="Close"
+              >
+                <svg
+                  width="16"
+                  height="16"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth="2"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                >
+                  <line x1="18" y1="6" x2="6" y2="18" />
+                  <line x1="6" y1="6" x2="18" y2="18" />
+                </svg>
               </button>
             )}
-
-            <span className={`inline-flex items-center px-2 py-1 rounded-md text-xs font-medium ${currentStatusBadge}`}>
-              {result ? result.status.replace("_", " ") : running ? "running" : "idle"}
-            </span>
           </div>
-
-          {settings.dryRun && (
-            <div className="rounded-lg border border-amber-300 bg-amber-50 px-3 py-2 text-xs text-amber-800 dark:border-amber-800 dark:bg-amber-900/30 dark:text-amber-200">
-              Dry run is ON. The agent will simulate edits and never write files.
-            </div>
-          )}
-
-          {showAdvanced && (
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-3 rounded-xl border border-neutral-200 dark:border-neutral-800 p-3 bg-white dark:bg-neutral-950">
-              <label className="flex items-center justify-between gap-2 text-xs md:col-span-1">
-                <span>Run preflight checks</span>
-                <input
-                  type="checkbox"
-                  checked={settings.runPreflightChecks}
-                  onChange={(event) =>
-                    updateSettings("runPreflightChecks", event.target.checked)
-                  }
-                  disabled={running}
-                />
-              </label>
-              <label className="flex items-center justify-between gap-2 text-xs md:col-span-1">
-                <span>Resume from latest checkpoint</span>
-                <input
-                  type="checkbox"
-                  checked={settings.resumeFromLastCheckpoint}
-                  onChange={(event) =>
-                    updateSettings("resumeFromLastCheckpoint", event.target.checked)
-                  }
-                  disabled={running}
-                />
-              </label>
-              <label className="flex items-center justify-between gap-2 text-xs md:col-span-1">
-                <span>Require clarification before edits</span>
-                <input
-                  type="checkbox"
-                  checked={settings.requireClarificationBeforeEdits}
-                  onChange={(event) =>
-                    updateSettings("requireClarificationBeforeEdits", event.target.checked)
-                  }
-                  disabled={running}
-                />
-              </label>
-              <label className="flex items-center justify-between gap-2 text-xs md:col-span-1">
-                <span>Strict verification</span>
-                <input
-                  type="checkbox"
-                  checked={settings.strictVerification}
-                  onChange={(event) => updateSettings("strictVerification", event.target.checked)}
-                  disabled={running}
-                />
-              </label>
-              <label className="flex items-center justify-between gap-2 text-xs md:col-span-1">
-                <span>Auto-fix on failed gates</span>
-                <input
-                  type="checkbox"
-                  checked={settings.autoFixVerification}
-                  onChange={(event) => updateSettings("autoFixVerification", event.target.checked)}
-                  disabled={running}
-                />
-              </label>
-              <label className="flex items-center justify-between gap-2 text-xs md:col-span-1">
-                <span>Dry run (no writes/deletes)</span>
-                <input
-                  type="checkbox"
-                  checked={settings.dryRun}
-                  onChange={(event) => updateSettings("dryRun", event.target.checked)}
-                  disabled={running}
-                />
-              </label>
-              <label className="flex items-center justify-between gap-2 text-xs md:col-span-1">
-                <span>Rollback on failure</span>
-                <input
-                  type="checkbox"
-                  checked={settings.rollbackOnFailure}
-                  onChange={(event) =>
-                    updateSettings("rollbackOnFailure", event.target.checked)
-                  }
-                  disabled={running}
-                />
-              </label>
-
-              <label className="flex items-center justify-between gap-2 text-xs md:col-span-1">
-                <span>Max file writes</span>
-                <input
-                  type="number"
-                  min={1}
-                  max={120}
-                  value={settings.maxFileWrites}
-                  onChange={(event) => {
-                    const value = Number(event.target.value);
-                    if (!Number.isFinite(value)) return;
-                    updateSettings("maxFileWrites", clamp(value, 1, 120));
-                  }}
-                  className="w-20 rounded border border-neutral-300 dark:border-neutral-700 px-2 py-1 bg-white dark:bg-neutral-900"
-                  disabled={running}
-                />
-              </label>
-
-              <label className="flex items-center justify-between gap-2 text-xs md:col-span-1">
-                <span>Max command runs</span>
-                <input
-                  type="number"
-                  min={1}
-                  max={140}
-                  value={settings.maxCommandRuns}
-                  onChange={(event) => {
-                    const value = Number(event.target.value);
-                    if (!Number.isFinite(value)) return;
-                    updateSettings("maxCommandRuns", clamp(value, 1, 140));
-                  }}
-                  className="w-20 rounded border border-neutral-300 dark:border-neutral-700 px-2 py-1 bg-white dark:bg-neutral-900"
-                  disabled={running}
-                />
-              </label>
-              <label className="flex items-center justify-between gap-2 text-xs md:col-span-1">
-                <span>Max parallel work units</span>
-                <input
-                  type="number"
-                  min={1}
-                  max={8}
-                  value={settings.maxParallelWorkUnits}
-                  onChange={(event) => {
-                    const value = Number(event.target.value);
-                    if (!Number.isFinite(value)) return;
-                    updateSettings("maxParallelWorkUnits", clamp(value, 1, 8));
-                  }}
-                  className="w-20 rounded border border-neutral-300 dark:border-neutral-700 px-2 py-1 bg-white dark:bg-neutral-900"
-                  disabled={running || settings.executionMode !== "multi"}
-                />
-              </label>
-
-              <label className="flex items-center justify-between gap-2 text-xs md:col-span-1">
-                <span>Critic pass threshold</span>
-                <input
-                  type="number"
-                  min={0.2}
-                  max={0.95}
-                  step={0.01}
-                  value={settings.criticPassThreshold}
-                  onChange={(event) => {
-                    const value = Number(event.target.value);
-                    if (!Number.isFinite(value)) return;
-                    updateSettings(
-                      "criticPassThreshold",
-                      Math.max(0.2, Math.min(0.95, value))
-                    );
-                  }}
-                  className="w-20 rounded border border-neutral-300 dark:border-neutral-700 px-2 py-1 bg-white dark:bg-neutral-900"
-                  disabled={running || settings.executionMode !== "multi"}
-                />
-              </label>
-
-              <label className="flex flex-col gap-1 text-xs md:col-span-2">
-                <span className="text-neutral-500">Model override (optional)</span>
-                <input
-                  type="text"
-                  value={settings.modelOverride}
-                  onChange={(event) => updateSettings("modelOverride", event.target.value)}
-                  className="w-full rounded border border-neutral-300 dark:border-neutral-700 px-2 py-1.5 bg-white dark:bg-neutral-900"
-                  placeholder="e.g. qwen3:30b-128k"
-                  disabled={running}
-                />
-              </label>
-
-              <label className="flex flex-col gap-1 text-xs md:col-span-2">
-                <span className="text-neutral-500">
-                  Custom verification commands (one per line, optional)
-                </span>
-                <textarea
-                  value={settings.customVerificationCommands}
-                  onChange={(event) =>
-                    updateSettings("customVerificationCommands", event.target.value)
-                  }
-                  className="w-full min-h-[96px] rounded border border-neutral-300 dark:border-neutral-700 px-2 py-1.5 bg-white dark:bg-neutral-900 font-mono text-[11px]"
-                  placeholder={"pnpm -s lint\npnpm -s exec tsc --noEmit\npnpm -s build"}
-                  disabled={running}
-                />
-              </label>
-            </div>
-          )}
-
-          {statusMessage && <p className="text-xs text-neutral-500">{statusMessage}</p>}
-          {error && <p className="text-sm text-red-600 dark:text-red-400">{error}</p>}
         </div>
+      </header>
 
-        <div className="flex-1 min-h-0 grid grid-cols-1 xl:grid-cols-[2fr_1fr] gap-0">
-          <div className="min-h-0 overflow-y-auto p-5 space-y-4 border-r border-neutral-200 dark:border-neutral-800">
-            <>
-                <div className="rounded-xl border border-neutral-200 dark:border-neutral-800 p-4 bg-white dark:bg-neutral-900/60">
-                  <h3 className="text-sm font-semibold mb-2">Run Summary</h3>
-                  <p className="text-sm whitespace-pre-wrap">
+      <div className="flex-1 min-h-0 overflow-y-auto">
+        <div className="mx-auto max-w-6xl px-6 py-6 space-y-6">
+          <section className={cardClass}>
+            <div className={cardHeaderClass}>Goal</div>
+            <div className={`${cardBodyClass} space-y-4`}>
+              <div className="flex flex-wrap items-center justify-between gap-3">
+                <p className="text-[11px] text-neutral-500 font-mono">
+                  Workspace: {workspacePath?.trim() || "(default workspace)"}
+                </p>
+                {settings.dryRun && (
+                  <span className="px-2 py-1 rounded-full bg-amber-100 text-amber-700 text-[11px] font-medium">
+                    Dry run enabled
+                  </span>
+                )}
+              </div>
+              <textarea
+                value={goal}
+                onChange={(event) => setGoal(event.target.value)}
+                placeholder="Example: Implement JWT auth, migrate DB schema, add tests, run lint/typecheck/build, and resolve all failures."
+                className="w-full min-h-[120px] max-h-64 resize-y rounded-2xl border border-black/10 dark:border-white/10 bg-white/80 dark:bg-neutral-900 px-4 py-3 text-sm focus:outline-none focus:ring-2 focus:ring-emerald-300"
+                disabled={running}
+              />
+
+              <div className="flex flex-wrap items-center gap-3">
+                <label className="flex items-center gap-2 text-xs text-neutral-500">
+                  <span>Execution mode</span>
+                  <select
+                    value={settings.executionMode}
+                    onChange={(event) =>
+                      updateSettings(
+                        "executionMode",
+                        event.target.value === "single" ? "single" : "multi"
+                      )
+                    }
+                    className="rounded-xl border border-black/10 dark:border-white/10 bg-white/80 dark:bg-neutral-900 px-2 py-1 text-sm"
+                    disabled={running}
+                  >
+                    <option value="multi">Multi-agent async</option>
+                    <option value="single">Single-agent (legacy)</option>
+                  </select>
+                </label>
+                <label className="flex items-center gap-2 text-xs text-neutral-500">
+                  <span>Max iterations</span>
+                  <input
+                    type="number"
+                    min={2}
+                    max={40}
+                    value={settings.maxIterations}
+                    onChange={(event) => {
+                      const value = Number(event.target.value);
+                      if (!Number.isFinite(value)) return;
+                      updateSettings("maxIterations", clamp(value, 2, 40));
+                    }}
+                    className="w-20 rounded-xl border border-black/10 dark:border-white/10 bg-white/80 dark:bg-neutral-900 px-2 py-1 text-sm"
+                    disabled={running}
+                  />
+                </label>
+
+                <button
+                  onClick={applyCodingDefaults}
+                  disabled={running}
+                  className="text-xs px-3 py-2 rounded-xl border border-emerald-200 text-emerald-700 hover:bg-emerald-50 transition-colors cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
+                  type="button"
+                >
+                  Coding Defaults
+                </button>
+
+                <button
+                  onClick={runAutonomousAgent}
+                  disabled={!canRun}
+                  className="inline-flex items-center gap-1.5 px-3.5 py-2.5 rounded-2xl bg-emerald-600 text-white text-sm font-medium hover:bg-emerald-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors cursor-pointer"
+                >
+                  {running ? (
+                    <>
+                      <svg className="animate-spin w-4 h-4" viewBox="0 0 24 24" fill="none">
+                        <circle
+                          cx="12"
+                          cy="12"
+                          r="10"
+                          stroke="currentColor"
+                          strokeWidth="3"
+                          className="opacity-25"
+                        />
+                        <path
+                          d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"
+                          fill="currentColor"
+                          className="opacity-75"
+                        />
+                      </svg>
+                      Running...
+                    </>
+                  ) : (
+                    <>
+                      <svg
+                        width="14"
+                        height="14"
+                        viewBox="0 0 24 24"
+                        fill="none"
+                        stroke="currentColor"
+                        strokeWidth="2"
+                        strokeLinecap="round"
+                        strokeLinejoin="round"
+                      >
+                        <polygon points="5 3 19 12 5 21 5 3" />
+                      </svg>
+                      Start Run
+                    </>
+                  )}
+                </button>
+
+                {running && (
+                  <button
+                    onClick={cancelRun}
+                    className="inline-flex items-center gap-1.5 px-3 py-2.5 rounded-2xl border border-black/10 dark:border-white/10 text-sm hover:bg-black/5 dark:hover:bg-white/10 transition-colors cursor-pointer"
+                  >
+                    Cancel
+                  </button>
+                )}
+              </div>
+
+              <details
+                className="rounded-xl border border-black/10 dark:border-white/10 bg-white/70 dark:bg-neutral-950/70 p-3"
+                open={showAdvanced || expertMode}
+                onToggle={(event) => setShowAdvanced(event.currentTarget.open)}
+              >
+                <summary className="cursor-pointer text-xs font-semibold uppercase tracking-wider text-neutral-500">
+                  Advanced settings
+                </summary>
+                <div className="mt-3 grid grid-cols-1 md:grid-cols-2 gap-3">
+                  <label className="flex items-center justify-between gap-2 text-xs md:col-span-1">
+                    <span>Run preflight checks</span>
+                    <input
+                      type="checkbox"
+                      checked={settings.runPreflightChecks}
+                      onChange={(event) =>
+                        updateSettings("runPreflightChecks", event.target.checked)
+                      }
+                      disabled={running}
+                    />
+                  </label>
+                  <label className="flex items-center justify-between gap-2 text-xs md:col-span-1">
+                    <span>Resume from latest checkpoint</span>
+                    <input
+                      type="checkbox"
+                      checked={settings.resumeFromLastCheckpoint}
+                      onChange={(event) =>
+                        updateSettings("resumeFromLastCheckpoint", event.target.checked)
+                      }
+                      disabled={running}
+                    />
+                  </label>
+                  <label className="flex items-center justify-between gap-2 text-xs md:col-span-1">
+                    <span>Require clarification before edits</span>
+                    <input
+                      type="checkbox"
+                      checked={settings.requireClarificationBeforeEdits}
+                      onChange={(event) =>
+                        updateSettings("requireClarificationBeforeEdits", event.target.checked)
+                      }
+                      disabled={running}
+                    />
+                  </label>
+                  <label className="flex items-center justify-between gap-2 text-xs md:col-span-1">
+                    <span>Strict verification</span>
+                    <input
+                      type="checkbox"
+                      checked={settings.strictVerification}
+                      onChange={(event) => updateSettings("strictVerification", event.target.checked)}
+                      disabled={running}
+                    />
+                  </label>
+                  <label className="flex items-center justify-between gap-2 text-xs md:col-span-1">
+                    <span>Auto-fix on failed gates</span>
+                    <input
+                      type="checkbox"
+                      checked={settings.autoFixVerification}
+                      onChange={(event) => updateSettings("autoFixVerification", event.target.checked)}
+                      disabled={running}
+                    />
+                  </label>
+                  <label className="flex items-center justify-between gap-2 text-xs md:col-span-1">
+                    <span>Dry run (no writes/deletes)</span>
+                    <input
+                      type="checkbox"
+                      checked={settings.dryRun}
+                      onChange={(event) => updateSettings("dryRun", event.target.checked)}
+                      disabled={running}
+                    />
+                  </label>
+                  <label className="flex items-center justify-between gap-2 text-xs md:col-span-1">
+                    <span>Rollback on failure</span>
+                    <input
+                      type="checkbox"
+                      checked={settings.rollbackOnFailure}
+                      onChange={(event) => updateSettings("rollbackOnFailure", event.target.checked)}
+                      disabled={running}
+                    />
+                  </label>
+
+                  <label className="flex items-center justify-between gap-2 text-xs md:col-span-1">
+                    <span>Max file writes</span>
+                    <input
+                      type="number"
+                      min={1}
+                      max={120}
+                      value={settings.maxFileWrites}
+                      onChange={(event) => {
+                        const value = Number(event.target.value);
+                        if (!Number.isFinite(value)) return;
+                        updateSettings("maxFileWrites", clamp(value, 1, 120));
+                      }}
+                      className="w-20 rounded border border-black/10 dark:border-white/10 px-2 py-1 bg-white/80 dark:bg-neutral-900"
+                      disabled={running}
+                    />
+                  </label>
+
+                  <label className="flex items-center justify-between gap-2 text-xs md:col-span-1">
+                    <span>Max command runs</span>
+                    <input
+                      type="number"
+                      min={1}
+                      max={140}
+                      value={settings.maxCommandRuns}
+                      onChange={(event) => {
+                        const value = Number(event.target.value);
+                        if (!Number.isFinite(value)) return;
+                        updateSettings("maxCommandRuns", clamp(value, 1, 140));
+                      }}
+                      className="w-20 rounded border border-black/10 dark:border-white/10 px-2 py-1 bg-white/80 dark:bg-neutral-900"
+                      disabled={running}
+                    />
+                  </label>
+                  <label className="flex items-center justify-between gap-2 text-xs md:col-span-1">
+                    <span>Max parallel work units</span>
+                    <input
+                      type="number"
+                      min={1}
+                      max={8}
+                      value={settings.maxParallelWorkUnits}
+                      onChange={(event) => {
+                        const value = Number(event.target.value);
+                        if (!Number.isFinite(value)) return;
+                        updateSettings("maxParallelWorkUnits", clamp(value, 1, 8));
+                      }}
+                      className="w-20 rounded border border-black/10 dark:border-white/10 px-2 py-1 bg-white/80 dark:bg-neutral-900"
+                      disabled={running || settings.executionMode !== "multi"}
+                    />
+                  </label>
+
+                  <label className="flex items-center justify-between gap-2 text-xs md:col-span-1">
+                    <span>Critic pass threshold</span>
+                    <input
+                      type="number"
+                      min={0.2}
+                      max={0.95}
+                      step={0.01}
+                      value={settings.criticPassThreshold}
+                      onChange={(event) => {
+                        const value = Number(event.target.value);
+                        if (!Number.isFinite(value)) return;
+                        updateSettings(
+                          "criticPassThreshold",
+                          Math.max(0.2, Math.min(0.95, value))
+                        );
+                      }}
+                      className="w-20 rounded border border-black/10 dark:border-white/10 px-2 py-1 bg-white/80 dark:bg-neutral-900"
+                      disabled={running || settings.executionMode !== "multi"}
+                    />
+                  </label>
+
+                  <label className="flex flex-col gap-1 text-xs md:col-span-2">
+                    <span className="text-neutral-500">Model override (optional)</span>
+                    <input
+                      type="text"
+                      value={settings.modelOverride}
+                      onChange={(event) => updateSettings("modelOverride", event.target.value)}
+                      className="w-full rounded border border-black/10 dark:border-white/10 px-2 py-1.5 bg-white/80 dark:bg-neutral-900"
+                      placeholder="e.g. qwen3:30b-128k"
+                      disabled={running}
+                    />
+                  </label>
+
+                  <label className="flex flex-col gap-1 text-xs md:col-span-2">
+                    <span className="text-neutral-500">
+                      Custom verification commands (one per line, optional)
+                    </span>
+                    <textarea
+                      value={settings.customVerificationCommands}
+                      onChange={(event) =>
+                        updateSettings("customVerificationCommands", event.target.value)
+                      }
+                      className="w-full min-h-[96px] rounded border border-black/10 dark:border-white/10 px-2 py-1.5 bg-white/80 dark:bg-neutral-900 font-mono text-[11px]"
+                      placeholder={"pnpm -s lint\npnpm -s exec tsc --noEmit\npnpm -s build"}
+                      disabled={running}
+                    />
+                  </label>
+                </div>
+              </details>
+
+              {statusMessage && <p className="text-xs text-neutral-500">{statusMessage}</p>}
+              {error && <p className="text-sm text-red-600 dark:text-red-400">{error}</p>}
+            </div>
+          </section>
+
+          <div className="grid gap-6 xl:grid-cols-[2fr_1fr]">
+            <div className="space-y-6">
+              <section className={cardClass}>
+                <div className={cardHeaderClass}>Run Summary</div>
+                <div className={`${cardBodyClass} space-y-4`}>
+                  <p className="text-sm text-neutral-700 dark:text-neutral-300 whitespace-pre-wrap">
                     {result
                       ? result.summary || result.error || "No summary returned."
                       : running
@@ -1998,863 +2096,1038 @@ export default function AutonomousPanel({
                         : "No run yet. Set a goal and start an autonomous run."}
                   </p>
 
-                  <div className="mt-3 grid grid-cols-1 sm:grid-cols-3 gap-2 text-xs text-neutral-500">
+                  <div className="grid grid-cols-1 sm:grid-cols-3 gap-2 text-xs text-neutral-500">
                     <div>
-                      Iterations: <span className="font-mono">{result ? `${result.iterationsUsed}/${result.maxIterations}` : `${liveStepCount}/${settings.maxIterations}`}</span>
+                      Iterations:{" "}
+                      <span className="font-mono">
+                        {result
+                          ? `${result.iterationsUsed}/${result.maxIterations}`
+                          : `${liveStepCount}/${settings.maxIterations}`}
+                      </span>
                     </div>
                     <div>
-                      Files changed: <span className="font-mono">{result ? result.filesChanged.length : "..."}</span>
+                      Files changed:{" "}
+                      <span className="font-mono">
+                        {result ? result.filesChanged.length : "..."}
+                      </span>
                     </div>
                     <div>
-                      Verification checks: <span className="font-mono">{effectiveVerificationChecks.length}</span>
+                      Verification checks:{" "}
+                      <span className="font-mono">{effectiveVerificationChecks.length}</span>
                     </div>
                   </div>
 
                   {result && (
-                    <div className="mt-3 text-xs text-neutral-500 space-y-1">
-                      <div>Run ID: <span className="font-mono">{result.runId || "(unknown)"}</span></div>
-                      <div>Resumed from: <span className="font-mono">{result.resumedFromRunId || "(fresh run)"}</span></div>
-                      <div>Execution mode: <span className="font-mono">{result.executionMode}</span></div>
-                      <div>Team size: <span className="font-mono">{result.teamSize}</span></div>
-                      <div>Run preflight checks: <span className="font-mono">{String(result.runPreflightChecks)}</span></div>
-                      <div>Preflight passed: <span className="font-mono">{String(result.preflightPassed)}</span></div>
-                      <div>Zero known issues: <span className="font-mono">{String(result.zeroKnownIssues)}</span></div>
-                      <div>Intelligence summary: <span className="font-mono">{result.projectIntelligence.summary || "(none)"}</span></div>
-                      <div>File writes: <span className="font-mono">{result.fileWriteCount}</span></div>
-                      <div>Command runs: <span className="font-mono">{result.commandRunCount}</span></div>
-                      <div>Verification attempts: <span className="font-mono">{result.verificationAttempts}</span></div>
-                      <div>Verification passed: <span className="font-mono">{String(result.verificationPassed)}</span></div>
-                      <div>Rollback on failure: <span className="font-mono">{String(result.rollbackOnFailure)}</span></div>
-                      <div>Rollback applied: <span className="font-mono">{String(result.rollbackApplied)}</span></div>
-                      {result.multiAgentReport && (
+                    <details
+                      className="rounded-xl border border-black/10 dark:border-white/10 bg-white/70 dark:bg-neutral-950/70 p-3"
+                      open={runDetailsOpen}
+                      onToggle={(event) => setRunDetailsOpen(event.currentTarget.open)}
+                    >
+                      <summary className="cursor-pointer text-xs font-semibold uppercase tracking-wider text-neutral-500">
+                        Run details
+                      </summary>
+                      <div className="mt-2 text-xs text-neutral-500 space-y-1">
                         <div>
-                          Work units: <span className="font-mono">{result.multiAgentReport.workUnits.length}</span>
+                          Run ID: <span className="font-mono">{result.runId || "(unknown)"}</span>
                         </div>
-                      )}
-                    </div>
-                  )}
-
-                  {result?.verificationCommands.length ? (
-                    <div className="mt-3">
-                      <div className="text-xs font-semibold uppercase tracking-wider text-neutral-500 mb-1">
-                        Quality Gates
-                      </div>
-                      <ul className="space-y-1 text-xs font-mono">
-                        {result.verificationCommands.map((command, index) => (
-                          <li key={`${commandToString(command)}-${index}`}>
-                            {commandToString(command)}
-                          </li>
-                        ))}
-                      </ul>
-                    </div>
-                  ) : null}
-
-                  {result?.multiAgentReport?.observability && (
-                    <div className="mt-3">
-                      <div className="text-xs font-semibold uppercase tracking-wider text-neutral-500 mb-1">
-                        Multi-Agent Observability
-                      </div>
-                      <div className="text-xs text-neutral-500 space-y-1">
                         <div>
-                          Total runtime:{" "}
+                          Resumed from:{" "}
                           <span className="font-mono">
-                            {Math.round(
-                              result.multiAgentReport.observability.totalDurationMs / 1000
-                            )}
-                            s
+                            {result.resumedFromRunId || "(fresh run)"}
                           </span>
                         </div>
                         <div>
-                          Flaky quarantined commands:{" "}
+                          Execution mode: <span className="font-mono">{result.executionMode}</span>
+                        </div>
+                        <div>
+                          Team size: <span className="font-mono">{result.teamSize}</span>
+                        </div>
+                        <div>
+                          Run preflight checks:{" "}
+                          <span className="font-mono">{String(result.runPreflightChecks)}</span>
+                        </div>
+                        <div>
+                          Preflight passed: <span className="font-mono">{String(result.preflightPassed)}</span>
+                        </div>
+                        <div>
+                          Zero known issues: <span className="font-mono">{String(result.zeroKnownIssues)}</span>
+                        </div>
+                        <div>
+                          Intelligence summary:{" "}
                           <span className="font-mono">
-                            {result.multiAgentReport.flakyQuarantinedCommands.join(", ") ||
-                              "(none)"}
+                            {result.projectIntelligence.summary || "(none)"}
                           </span>
                         </div>
+                        <div>
+                          File writes: <span className="font-mono">{result.fileWriteCount}</span>
+                        </div>
+                        <div>
+                          Command runs: <span className="font-mono">{result.commandRunCount}</span>
+                        </div>
+                        <div>
+                          Verification attempts:{" "}
+                          <span className="font-mono">{result.verificationAttempts}</span>
+                        </div>
+                        <div>
+                          Verification passed:{" "}
+                          <span className="font-mono">{String(result.verificationPassed)}</span>
+                        </div>
+                        <div>
+                          Rollback on failure:{" "}
+                          <span className="font-mono">{String(result.rollbackOnFailure)}</span>
+                        </div>
+                        <div>
+                          Rollback applied:{" "}
+                          <span className="font-mono">{String(result.rollbackApplied)}</span>
+                        </div>
+                        {result.multiAgentReport && (
+                          <div>
+                            Work units:{" "}
+                            <span className="font-mono">{result.multiAgentReport.workUnits.length}</span>
+                          </div>
+                        )}
                       </div>
 
-                      {result.multiAgentReport.observability.modelUsage.length > 0 && (
-                        <ul className="mt-2 space-y-1 text-xs font-mono">
-                          {result.multiAgentReport.observability.modelUsage.map((metric) => (
-                            <li key={`${metric.role}-${metric.tier}`}>
-                              {metric.role}/{metric.tier} calls={metric.calls} retries=
-                              {metric.retries} cache={metric.cacheHits} escalations=
-                              {metric.escalations} cost={metric.estimatedCostUnits.toFixed(0)}
-                            </li>
-                          ))}
-                        </ul>
-                      )}
-
-                      {result.multiAgentReport.observability.failureHeatmap.length > 0 && (
-                        <ul className="mt-2 space-y-1 text-xs font-mono">
-                          {result.multiAgentReport.observability.failureHeatmap
-                            .slice(0, 6)
-                            .map((entry) => (
-                              <li key={entry.label}>
-                                {entry.label}: {entry.count}
+                      {result.verificationCommands.length > 0 && (
+                        <div className="mt-3">
+                          <div className="text-[11px] font-semibold uppercase tracking-wider text-neutral-500 mb-1">
+                            Quality Gates
+                          </div>
+                          <ul className="space-y-1 text-xs font-mono">
+                            {result.verificationCommands.map((command, index) => (
+                              <li key={`${commandToString(command)}-${index}`}>
+                                {commandToString(command)}
                               </li>
                             ))}
-                        </ul>
-                      )}
-
-                      {unitTimelineMetrics.length > 0 && (
-                        <div className="mt-3 space-y-1.5">
-                          <div className="text-xs font-semibold uppercase tracking-wider text-neutral-500">
-                            Unit Timeline
-                          </div>
-                          {unitTimelineMetrics.map((metric) => (
-                            <div
-                              key={`${metric.unitId}-${metric.attempts}`}
-                              className="rounded border border-neutral-200 dark:border-neutral-800 p-2"
-                            >
-                              <div className="flex items-center justify-between gap-2 text-[11px] font-mono">
-                                <span className="truncate">
-                                  {metric.unitId} [{metric.status}]
-                                </span>
-                                <span>
-                                  {formatDuration(metric.durationMs)} | tries={metric.attempts}
-                                </span>
-                              </div>
-                              <div className="mt-1 h-1.5 rounded bg-neutral-200 dark:bg-neutral-800 overflow-hidden">
-                                <div
-                                  className={`h-full ${
-                                    metric.status === "completed"
-                                      ? "bg-emerald-500"
-                                      : metric.status === "failed" ||
-                                          metric.status === "blocked"
-                                        ? "bg-red-500"
-                                        : "bg-amber-500"
-                                  }`}
-                                  style={{ width: `${metric.widthPercent}%` }}
-                                />
-                              </div>
-                            </div>
-                          ))}
+                          </ul>
                         </div>
                       )}
-                    </div>
+
+                      {expertMode && result.multiAgentReport?.observability && (
+                        <div className="mt-3">
+                          <div className="text-[11px] font-semibold uppercase tracking-wider text-neutral-500 mb-1">
+                            Multi-Agent Observability
+                          </div>
+                          <div className="text-xs text-neutral-500 space-y-1">
+                            <div>
+                              Total runtime:{" "}
+                              <span className="font-mono">
+                                {Math.round(
+                                  result.multiAgentReport.observability.totalDurationMs / 1000
+                                )}
+                                s
+                              </span>
+                            </div>
+                            <div>
+                              Flaky quarantined commands:{" "}
+                              <span className="font-mono">
+                                {result.multiAgentReport.flakyQuarantinedCommands.join(", ") ||
+                                  "(none)"}
+                              </span>
+                            </div>
+                          </div>
+
+                          {result.multiAgentReport.observability.modelUsage.length > 0 && (
+                            <ul className="mt-2 space-y-1 text-xs font-mono">
+                              {result.multiAgentReport.observability.modelUsage.map((metric) => (
+                                <li key={`${metric.role}-${metric.tier}`}>
+                                  {metric.role}/{metric.tier} calls={metric.calls} retries=
+                                  {metric.retries} cache={metric.cacheHits} escalations=
+                                  {metric.escalations} cost={metric.estimatedCostUnits.toFixed(0)}
+                                </li>
+                              ))}
+                            </ul>
+                          )}
+
+                          {result.multiAgentReport.observability.failureHeatmap.length > 0 && (
+                            <ul className="mt-2 space-y-1 text-xs font-mono">
+                              {result.multiAgentReport.observability.failureHeatmap
+                                .slice(0, 6)
+                                .map((entry) => (
+                                  <li key={entry.label}>
+                                    {entry.label}: {entry.count}
+                                  </li>
+                                ))}
+                            </ul>
+                          )}
+
+                          {unitTimelineMetrics.length > 0 && (
+                            <div className="mt-3 space-y-1.5">
+                              <div className="text-[11px] font-semibold uppercase tracking-wider text-neutral-500">
+                                Unit Timeline
+                              </div>
+                              {unitTimelineMetrics.map((metric) => (
+                                <div
+                                  key={`${metric.unitId}-${metric.attempts}`}
+                                  className="rounded border border-black/10 dark:border-white/10 p-2"
+                                >
+                                  <div className="flex items-center justify-between gap-2 text-[11px] font-mono">
+                                    <span className="truncate">
+                                      {metric.unitId} [{metric.status}]
+                                    </span>
+                                    <span>
+                                      {formatDuration(metric.durationMs)} | tries={metric.attempts}
+                                    </span>
+                                  </div>
+                                  <div className="mt-1 h-1.5 rounded bg-neutral-200 dark:bg-neutral-800 overflow-hidden">
+                                    <div
+                                      className={`h-full ${
+                                        metric.status === "completed"
+                                          ? "bg-emerald-500"
+                                          : metric.status === "failed" || metric.status === "blocked"
+                                            ? "bg-red-500"
+                                            : "bg-amber-500"
+                                      }`}
+                                      style={{ width: `${metric.widthPercent}%` }}
+                                    />
+                                  </div>
+                                </div>
+                              ))}
+                            </div>
+                          )}
+                        </div>
+                      )}
+                    </details>
                   )}
 
                   {result && (
-                    <div className="mt-4 flex flex-wrap items-center gap-2">
+                    <div className="flex flex-wrap items-center gap-2">
                       {onPublishReport && (
                         <button
                           onClick={() => onPublishReport(formatRunReport(result))}
-                          className="px-3 py-2 rounded-lg border border-neutral-300 dark:border-neutral-700 hover:bg-neutral-100 dark:hover:bg-neutral-800 text-sm transition-colors cursor-pointer"
+                          className="px-3 py-2 rounded-lg border border-black/10 dark:border-white/10 hover:bg-black/5 dark:hover:bg-white/10 text-sm transition-colors cursor-pointer"
                         >
                           Publish Report To Chat
                         </button>
                       )}
                       <button
                         onClick={() => downloadTelemetryJson(result)}
-                        className="px-3 py-2 rounded-lg border border-neutral-300 dark:border-neutral-700 hover:bg-neutral-100 dark:hover:bg-neutral-800 text-sm transition-colors cursor-pointer"
+                        className="px-3 py-2 rounded-lg border border-black/10 dark:border-white/10 hover:bg-black/5 dark:hover:bg-white/10 text-sm transition-colors cursor-pointer"
                       >
                         Export Telemetry JSON
                       </button>
                     </div>
                   )}
                 </div>
+              </section>
 
-                {result?.status === "needs_clarification" && (
-                  <div className="rounded-xl border border-amber-300 dark:border-amber-700 bg-amber-50 dark:bg-amber-900/20 p-4 space-y-3">
-                    <div>
-                      <h3 className="text-sm font-semibold text-amber-800 dark:text-amber-200">
-                        Clarification Required Before Editing
-                      </h3>
-                      <p className="text-xs mt-1 text-amber-700 dark:text-amber-300">
-                        Answer the questions below. The agent will use these answers before writing or editing files.
-                      </p>
-                    </div>
-
-                    <div className="space-y-3">
-                      {pendingClarificationQuestions.map((question) => (
-                        <div key={question.id} className="rounded-lg border border-amber-200 dark:border-amber-800 p-3 bg-white dark:bg-neutral-950">
-                          <div className="flex items-center gap-2 text-xs">
-                            <span className="font-mono text-amber-700 dark:text-amber-300">{question.id}</span>
-                            {question.required && (
-                              <span className="px-1.5 py-0.5 rounded bg-red-100 text-red-700 dark:bg-red-900/40 dark:text-red-300">
-                                required
-                              </span>
-                            )}
-                          </div>
-                          <p className="text-sm mt-1">{question.question}</p>
-                          <p className="text-xs text-neutral-500 mt-1">{question.rationale}</p>
-                          {question.options && question.options.length > 0 && (
-                            <div className="mt-2 flex flex-wrap gap-2">
-                              {question.options.map((option) => {
-                                const selected =
-                                  (clarificationAnswers[question.id] || "").trim() ===
-                                  option.value;
-
-                                return (
-                                  <button
-                                    key={`${question.id}-${option.id}`}
-                                    type="button"
-                                    onClick={() =>
-                                      setClarificationAnswers((prev) => ({
-                                        ...prev,
-                                        [question.id]: option.value,
-                                      }))
-                                    }
-                                    className={`px-2.5 py-1.5 rounded-lg border text-xs transition-colors cursor-pointer ${
-                                      selected
-                                        ? "border-amber-500 bg-amber-100 text-amber-900 dark:border-amber-600 dark:bg-amber-900/40 dark:text-amber-200"
-                                        : "border-neutral-300 dark:border-neutral-700 hover:bg-neutral-100 dark:hover:bg-neutral-900"
-                                    }`}
-                                    title={option.description || option.value}
-                                    disabled={running}
-                                  >
-                                    <span>{option.label}</span>
-                                    {option.recommended && (
-                                      <span className="ml-1 text-[10px] uppercase tracking-wide opacity-80">
-                                        recommended
-                                      </span>
-                                    )}
-                                  </button>
-                                );
-                              })}
-                            </div>
-                          )}
-                          <textarea
-                            value={clarificationAnswers[question.id] || ""}
-                            onChange={(event) =>
-                              setClarificationAnswers((prev) => ({
-                                ...prev,
-                                [question.id]: event.target.value,
-                              }))
-                            }
-                            className="mt-2 w-full min-h-[72px] rounded border border-neutral-300 dark:border-neutral-700 px-2 py-1.5 text-sm bg-white dark:bg-neutral-900"
-                            placeholder={
-                              question.options && question.options.length > 0
-                                ? "Pick an option above or type a custom answer..."
-                                : "Your answer..."
-                            }
-                            disabled={running || question.allowCustomAnswer === false}
-                          />
-                        </div>
-                      ))}
-                    </div>
-
-                    <div className="flex items-center justify-between gap-3">
-                      <p className="text-xs text-amber-700 dark:text-amber-300">
-                        Missing required answers: {missingRequiredClarificationCount}
-                      </p>
-                      <button
-                        onClick={runAutonomousAgent}
-                        disabled={running || missingRequiredClarificationCount > 0}
-                        className="px-3 py-2 rounded-lg bg-amber-600 text-white text-sm hover:bg-amber-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors cursor-pointer"
-                      >
-                        Continue With Answers
-                      </button>
-                    </div>
-                  </div>
-                )}
-
-                {result && (
-                  <div className="rounded-xl border border-neutral-200 dark:border-neutral-800 overflow-hidden">
-                    <div className="px-4 py-3 border-b border-neutral-200 dark:border-neutral-800 bg-neutral-50 dark:bg-neutral-900/40">
-                      <h3 className="text-sm font-semibold">Project Digest</h3>
-                    </div>
-                    <div className="p-4 space-y-2 text-xs">
-                      <div>Workspace: <span className="font-mono">{result.projectDigest.workspace}</span></div>
-                      <div>Language hints: <span className="font-mono">{result.projectDigest.languageHints.join(", ") || "(none)"}</span></div>
-                      <div>Has tests: <span className="font-mono">{String(result.projectDigest.hasTests)}</span></div>
-                      <div>Key directories: <span className="font-mono">{result.projectDigest.keyDirectories.join(", ") || "(none)"}</span></div>
-                      <details>
-                        <summary className="cursor-pointer text-xs text-neutral-500">Tree preview</summary>
-                        <pre className="mt-2 text-[11px] rounded bg-neutral-100 dark:bg-neutral-900 p-3 max-h-56 overflow-auto whitespace-pre-wrap">{result.projectDigest.treePreview || "(none)"}</pre>
-                      </details>
-                    </div>
-                  </div>
-                )}
-
-                {result && (
-                  <div className="rounded-xl border border-neutral-200 dark:border-neutral-800 overflow-hidden">
-                    <div className="px-4 py-3 border-b border-neutral-200 dark:border-neutral-800 bg-neutral-50 dark:bg-neutral-900/40">
-                      <h3 className="text-sm font-semibold">Project Intelligence</h3>
-                    </div>
-                    <div className="p-4 space-y-3 text-xs">
-                      <div>Generated: <span className="font-mono">{result.projectIntelligence.generatedAt || "(unknown)"}</span></div>
-                      <div>Workspace: <span className="font-mono">{result.projectIntelligence.workspace || result.projectDigest.workspace}</span></div>
-                      <div>Summary: <span className="font-mono">{result.projectIntelligence.summary || "(none)"}</span></div>
-                      <div>Stack: <span className="font-mono">{result.projectIntelligence.stack.join(", ") || "(none)"}</span></div>
-                      <div>Top directories: <span className="font-mono">{result.projectIntelligence.topDirectories.join(", ") || "(none)"}</span></div>
-                      <div>Detected test files: <span className="font-mono">{result.projectIntelligence.testFileCount}</span></div>
-
-                      <details open>
-                        <summary className="cursor-pointer text-xs text-neutral-500">Risk signals</summary>
-                        <div className="mt-2 space-y-2">
-                          {result.projectIntelligence.signals.length === 0 ? (
-                            <p className="text-[11px] text-neutral-500">(none)</p>
-                          ) : (
-                            result.projectIntelligence.signals.map((signal) => (
-                              <div
-                                key={signal.key}
-                                className="rounded border border-neutral-200 dark:border-neutral-800 p-2 bg-white dark:bg-neutral-900"
-                              >
-                                <div className="flex items-center justify-between gap-2">
-                                  <div className="font-medium">{signal.label}</div>
-                                  <span className={`px-1.5 py-0.5 rounded text-[11px] ${signalBadgeClass(signal.severity)}`}>
-                                    {signal.severity} • {signal.count}
-                                  </span>
-                                </div>
-                                {signal.samples.length > 0 && (
-                                  <details className="mt-1">
-                                    <summary className="cursor-pointer text-[11px] text-neutral-500">
-                                      samples ({signal.samples.length})
-                                    </summary>
-                                    <pre className="mt-1 text-[11px] rounded bg-neutral-100 dark:bg-neutral-900 p-2 max-h-48 overflow-auto whitespace-pre-wrap">
-                                      {signal.samples.join("\n")}
-                                    </pre>
-                                  </details>
-                                )}
-                              </div>
-                            ))
-                          )}
-                        </div>
-                      </details>
-
-                      <details>
-                        <summary className="cursor-pointer text-xs text-neutral-500">Top hotspots</summary>
-                        <div className="mt-2 space-y-1">
-                          {result.projectIntelligence.hotspots.length === 0 ? (
-                            <p className="text-[11px] text-neutral-500">(none)</p>
-                          ) : (
-                            result.projectIntelligence.hotspots.slice(0, 20).map((hotspot) => (
-                              <div
-                                key={hotspot.path}
-                                className="flex items-center justify-between gap-2 rounded border border-neutral-200 dark:border-neutral-800 px-2 py-1 bg-white dark:bg-neutral-900"
-                              >
-                                <span className="font-mono truncate">{hotspot.path}</span>
-                                <span className="font-mono">{hotspot.lines} lines</span>
-                              </div>
-                            ))
-                          )}
-                        </div>
-                      </details>
-
-                      <details>
-                        <summary className="cursor-pointer text-xs text-neutral-500">
-                          Module edges ({result.projectIntelligence.moduleEdges.length})
-                        </summary>
-                        <pre className="mt-2 text-[11px] rounded bg-neutral-100 dark:bg-neutral-900 p-3 max-h-56 overflow-auto whitespace-pre-wrap">
-                          {result.projectIntelligence.moduleEdges.length > 0
-                            ? result.projectIntelligence.moduleEdges
-                                .slice(0, 80)
-                                .map((edge) => `${edge.from} -> ${edge.to}`)
-                                .join("\n")
-                            : "(none)"}
-                        </pre>
-                      </details>
-                    </div>
-                  </div>
-                )}
-
-                {result && result.teamRoster.length > 0 && (
-                  <div className="rounded-xl border border-neutral-200 dark:border-neutral-800 overflow-hidden">
-                    <div className="px-4 py-3 border-b border-neutral-200 dark:border-neutral-800 bg-neutral-50 dark:bg-neutral-900/40">
-                      <h3 className="text-sm font-semibold">Virtual Team Roster ({result.teamRoster.length})</h3>
-                    </div>
-                    <div className="p-4">
-                      <ul className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2 text-xs">
-                        {result.teamRoster.map((role, index) => (
-                          <li key={`${role}-${index}`} className="rounded border border-neutral-200 dark:border-neutral-800 px-2 py-1.5 bg-white dark:bg-neutral-900">
-                            {index + 1}. {role}
-                          </li>
-                        ))}
-                      </ul>
-                    </div>
-                  </div>
-                )}
-
-                {result && result.preflightChecks.length > 0 && (
-                  <div className="rounded-xl border border-neutral-200 dark:border-neutral-800 overflow-hidden">
-                    <div className="px-4 py-3 border-b border-neutral-200 dark:border-neutral-800 bg-neutral-50 dark:bg-neutral-900/40">
-                      <h3 className="text-sm font-semibold">Preflight Checks</h3>
-                    </div>
-                    <div className="divide-y divide-neutral-200 dark:divide-neutral-800">
-                      {result.preflightChecks.map((check, index) => (
-                        <details key={`${check.attempt}-preflight-${index}`}>
-                          <summary className="list-none cursor-pointer px-4 py-3 hover:bg-neutral-50 dark:hover:bg-neutral-900/40 transition-colors">
-                            <div className="flex items-center justify-between gap-3">
-                              <div className="min-w-0">
-                                <div className="text-xs text-neutral-500">Preflight</div>
-                                <div className="text-sm font-mono truncate">{commandToString(check.command)}</div>
-                              </div>
-                              <span
-                                className={`shrink-0 px-2 py-1 rounded text-xs font-medium ${
-                                  check.ok
-                                    ? "bg-emerald-100 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-300"
-                                    : "bg-red-100 text-red-700 dark:bg-red-900/40 dark:text-red-300"
-                                }`}
-                              >
-                                {check.ok ? "pass" : "fail"}
-                              </span>
-                            </div>
-                          </summary>
-                          <div className="px-4 pb-4">
-                            <pre className="text-xs rounded-lg bg-neutral-100 dark:bg-neutral-900 p-3 overflow-auto max-h-56 whitespace-pre-wrap">
-                              {check.output || "(no output)"}
-                            </pre>
-                          </div>
-                        </details>
-                      ))}
-                    </div>
-                  </div>
-                )}
-
-                <div className="rounded-xl border border-neutral-200 dark:border-neutral-800 overflow-hidden">
-                  <div className="px-4 py-3 border-b border-neutral-200 dark:border-neutral-800 bg-neutral-50 dark:bg-neutral-900/40">
-                    <h3 className="text-sm font-semibold">Workspace Access Scope</h3>
-                  </div>
-                  <div className="p-4 space-y-2">
-                    <div className="text-xs text-neutral-500">
-                      Files visible to the agent before execution.
-                    </div>
-                    {workspaceLoading ? (
-                      <p className="text-xs text-neutral-500">Loading workspace files...</p>
-                    ) : workspaceError ? (
-                      <p className="text-xs text-red-600 dark:text-red-400">{workspaceError}</p>
-                    ) : visibleWorkspaceFiles.length === 0 ? (
-                      <p className="text-xs text-neutral-500">(no files discovered)</p>
-                    ) : (
-                      <>
-                        <ul className="space-y-1 max-h-60 overflow-auto pr-1">
-                          {visibleWorkspaceFiles.map((filePath) => (
-                            <li
-                              key={`scope-${filePath}`}
-                              className="text-xs font-mono rounded border border-neutral-200 dark:border-neutral-800 px-2 py-1 bg-white dark:bg-neutral-900"
-                            >
-                              {filePath}
-                            </li>
-                          ))}
-                        </ul>
-                        {workspaceFiles.length > visibleWorkspaceFiles.length && (
-                          <p className="text-[11px] text-neutral-500">
-                            Showing first {visibleWorkspaceFiles.length} of {workspaceFiles.length} files.
-                          </p>
-                        )}
-                      </>
-                    )}
-                  </div>
-                </div>
-
-                <div className="rounded-xl border border-neutral-200 dark:border-neutral-800 overflow-hidden">
-                  <div className="px-4 py-3 border-b border-neutral-200 dark:border-neutral-800 bg-neutral-50 dark:bg-neutral-900/40">
-                    <h3 className="text-sm font-semibold">File Activity</h3>
-                  </div>
-                  <div className="p-4 grid grid-cols-1 md:grid-cols-2 gap-4">
-                    <div>
-                      <div className="text-xs font-semibold uppercase tracking-wider text-neutral-500 mb-2">
-                        Files Accessed ({filesAccessed.length})
-                      </div>
-                      {filesAccessed.length === 0 ? (
-                        <p className="text-xs text-neutral-500">(none yet)</p>
-                      ) : (
-                        <ul className="space-y-1 max-h-60 overflow-auto pr-1">
-                          {filesAccessed.map((filePath) => (
-                            <li
-                              key={`access-${filePath}`}
-                              className="text-xs font-mono rounded border border-neutral-200 dark:border-neutral-800 px-2 py-1 bg-white dark:bg-neutral-900"
-                            >
-                              {filePath}
-                            </li>
-                          ))}
-                        </ul>
-                      )}
-                    </div>
-
-                    <div>
-                      <div className="text-xs font-semibold uppercase tracking-wider text-neutral-500 mb-2">
-                        Files Edited ({filesEdited.length})
-                      </div>
-                      {filesEdited.length === 0 ? (
-                        <p className="text-xs text-neutral-500">(none yet)</p>
-                      ) : (
-                        <ul className="space-y-1 max-h-60 overflow-auto pr-1">
-                          {filesEdited.map((filePath) => (
-                            <li
-                              key={`edited-${filePath}`}
-                              className="text-xs font-mono rounded border border-neutral-200 dark:border-neutral-800 px-2 py-1 bg-white dark:bg-neutral-900"
-                            >
-                              {filePath}
-                            </li>
-                          ))}
-                        </ul>
-                      )}
-                    </div>
-                  </div>
-                </div>
-
-                <div className="rounded-xl border border-neutral-200 dark:border-neutral-800 overflow-hidden">
-                  <div className="px-4 py-3 border-b border-neutral-200 dark:border-neutral-800 bg-neutral-50 dark:bg-neutral-900/40">
-                    <h3 className="text-sm font-semibold">Step Log</h3>
+              {result?.status === "needs_clarification" && (
+                <section className="rounded-2xl border border-amber-200 dark:border-amber-700 bg-amber-50 dark:bg-amber-900/20 p-4 space-y-3">
+                  <div>
+                    <h3 className="text-sm font-semibold text-amber-800 dark:text-amber-200">
+                      Clarification Required Before Editing
+                    </h3>
+                    <p className="text-xs mt-1 text-amber-700 dark:text-amber-300">
+                      Answer the questions below. The agent will use these answers before writing or editing files.
+                    </p>
                   </div>
 
-                  <div className="divide-y divide-neutral-200 dark:divide-neutral-800">
-                    {(result ? result.steps : liveSteps).map((step, index) => (
-                      <details key={`${step.iteration}-${step.phase}-${index}`} className="group" open={!step.ok}>
-                        <summary className="list-none cursor-pointer px-4 py-3 hover:bg-neutral-50 dark:hover:bg-neutral-900/40 transition-colors">
-                          <div className="flex items-start justify-between gap-3">
-                            <div className="min-w-0">
-                              <div className="flex items-center gap-2 text-xs text-neutral-500">
-                                <span>Step {step.iteration}</span>
-                                <span>•</span>
-                                <span>{step.phase}</span>
-                                <span>•</span>
-                                <span>{step.durationMs} ms</span>
-                              </div>
-                              <div className="text-sm font-medium mt-0.5 truncate">
-                                {actionSummary(step.action)}
-                              </div>
-                              <p className="text-xs text-neutral-500 mt-1 line-clamp-2">{step.summary}</p>
-                            </div>
-                            <span
-                              className={`shrink-0 mt-0.5 px-2 py-1 rounded text-xs font-medium ${
-                                step.ok
-                                  ? "bg-emerald-100 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-300"
-                                  : "bg-red-100 text-red-700 dark:bg-red-900/40 dark:text-red-300"
-                              }`}
-                            >
-                              {step.ok ? "ok" : "failed"}
+                  <div className="space-y-3">
+                    {pendingClarificationQuestions.map((question) => (
+                      <div key={question.id} className="rounded-xl border border-amber-200 dark:border-amber-800 p-3 bg-white/80 dark:bg-neutral-950">
+                        <div className="flex items-center gap-2 text-xs">
+                          <span className="font-mono text-amber-700 dark:text-amber-300">
+                            {question.id}
+                          </span>
+                          {question.required && (
+                            <span className="px-1.5 py-0.5 rounded bg-red-100 text-red-700 dark:bg-red-900/40 dark:text-red-300">
+                              required
                             </span>
-                          </div>
-                        </summary>
-                        <div className="px-4 pb-4 space-y-3">
-                          <div>
-                            <div className="text-xs font-semibold uppercase tracking-wider text-neutral-500 mb-1">Thinking</div>
-                            <p className="text-sm whitespace-pre-wrap">{step.thinking}</p>
-                          </div>
-                          <div>
-                            <div className="text-xs font-semibold uppercase tracking-wider text-neutral-500 mb-1">Action JSON</div>
-                            <pre className="text-xs rounded-lg bg-neutral-100 dark:bg-neutral-900 p-3 overflow-x-auto">
-                              {JSON.stringify(step.action, null, 2)}
-                            </pre>
-                          </div>
-                          <div>
-                            <div className="text-xs font-semibold uppercase tracking-wider text-neutral-500 mb-1">Tool Output</div>
-                            <pre className="text-xs rounded-lg bg-neutral-100 dark:bg-neutral-900 p-3 overflow-auto max-h-56 whitespace-pre-wrap">
-                              {step.output || "(no output)"}
-                            </pre>
-                          </div>
+                          )}
                         </div>
-                      </details>
+                        <p className="text-sm mt-1">{question.question}</p>
+                        <p className="text-xs text-neutral-500 mt-1">{question.rationale}</p>
+                        {question.options && question.options.length > 0 && (
+                          <div className="mt-2 flex flex-wrap gap-2">
+                            {question.options.map((option) => {
+                              const selected =
+                                (clarificationAnswers[question.id] || "").trim() === option.value;
+
+                              return (
+                                <button
+                                  key={`${question.id}-${option.id}`}
+                                  type="button"
+                                  onClick={() =>
+                                    setClarificationAnswers((prev) => ({
+                                      ...prev,
+                                      [question.id]: option.value,
+                                    }))
+                                  }
+                                  className={`px-2.5 py-1.5 rounded-lg border text-xs transition-colors cursor-pointer ${
+                                    selected
+                                      ? "border-amber-500 bg-amber-100 text-amber-900 dark:border-amber-600 dark:bg-amber-900/40 dark:text-amber-200"
+                                      : "border-black/10 dark:border-white/10 hover:bg-black/5 dark:hover:bg-white/10"
+                                  }`}
+                                  title={option.description || option.value}
+                                  disabled={running}
+                                >
+                                  <span>{option.label}</span>
+                                  {option.recommended && (
+                                    <span className="ml-1 text-[10px] uppercase tracking-wide opacity-80">
+                                      recommended
+                                    </span>
+                                  )}
+                                </button>
+                              );
+                            })}
+                          </div>
+                        )}
+                        <textarea
+                          value={clarificationAnswers[question.id] || ""}
+                          onChange={(event) =>
+                            setClarificationAnswers((prev) => ({
+                              ...prev,
+                              [question.id]: event.target.value,
+                            }))
+                          }
+                          className="mt-2 w-full min-h-[72px] rounded border border-black/10 dark:border-white/10 px-2 py-1.5 text-sm bg-white/80 dark:bg-neutral-900"
+                          placeholder={
+                            question.options && question.options.length > 0
+                              ? "Pick an option above or type a custom answer..."
+                              : "Your answer..."
+                          }
+                          disabled={running || question.allowCustomAnswer === false}
+                        />
+                      </div>
                     ))}
                   </div>
-                </div>
 
-                {effectiveVerificationChecks.length > 0 && (
-                  <div className="rounded-xl border border-neutral-200 dark:border-neutral-800 overflow-hidden">
-                    <div className="px-4 py-3 border-b border-neutral-200 dark:border-neutral-800 bg-neutral-50 dark:bg-neutral-900/40">
-                      <h3 className="text-sm font-semibold">Verification Checks</h3>
+                  <div className="flex items-center justify-between gap-3">
+                    <p className="text-xs text-amber-700 dark:text-amber-300">
+                      Missing required answers: {missingRequiredClarificationCount}
+                    </p>
+                    <button
+                      onClick={runAutonomousAgent}
+                      disabled={running || missingRequiredClarificationCount > 0}
+                      className="px-3 py-2 rounded-lg bg-amber-600 text-white text-sm hover:bg-amber-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors cursor-pointer"
+                    >
+                      Continue With Answers
+                    </button>
+                  </div>
+                </section>
+              )}
+
+              <details
+                className={cardClass}
+                open={activityOpen}
+                onToggle={(event) => setActivityOpen(event.currentTarget.open)}
+              >
+                <summary className={`${cardHeaderClass} ${summaryClass}`}>
+                  Activity & Checks
+                </summary>
+                <div className={`${cardBodyClass} space-y-4`}>
+                  <div className="rounded-xl border border-black/10 dark:border-white/10 overflow-hidden">
+                    <div className="px-4 py-3 border-b border-black/10 dark:border-white/10 bg-white/70 dark:bg-neutral-900/40">
+                      <h3 className="text-sm font-semibold">Step Log</h3>
                     </div>
-                    <div className="divide-y divide-neutral-200 dark:divide-neutral-800">
-                      {effectiveVerificationChecks.map((check, index) => (
-                        <details key={`${check.attempt}-${index}`}>
-                          <summary className="list-none cursor-pointer px-4 py-3 hover:bg-neutral-50 dark:hover:bg-neutral-900/40 transition-colors">
-                            <div className="flex items-center justify-between gap-3">
+
+                    <div className="divide-y divide-black/10 dark:divide-white/10">
+                      {steps.map((step, index) => (
+                        <details key={`${step.iteration}-${step.phase}-${index}`} className="group" open={!step.ok}>
+                          <summary className="list-none cursor-pointer px-4 py-3 hover:bg-black/5 dark:hover:bg-white/10 transition-colors">
+                            <div className="flex items-start justify-between gap-3">
                               <div className="min-w-0">
-                                <div className="text-xs text-neutral-500">Attempt {check.attempt}</div>
-                                <div className="text-sm font-mono truncate">{commandToString(check.command)}</div>
+                                <div className="flex items-center gap-2 text-xs text-neutral-500">
+                                  <span>Step {step.iteration}</span>
+                                  <span>•</span>
+                                  <span>{step.phase}</span>
+                                  <span>•</span>
+                                  <span>{step.durationMs} ms</span>
+                                </div>
+                                <div className="text-sm font-medium mt-0.5 truncate">
+                                  {actionSummary(step.action)}
+                                </div>
+                                <p className="text-xs text-neutral-500 mt-1 line-clamp-2">
+                                  {step.summary}
+                                </p>
                               </div>
                               <span
-                                className={`shrink-0 px-2 py-1 rounded text-xs font-medium ${
-                                  check.ok
+                                className={`shrink-0 mt-0.5 px-2 py-1 rounded text-xs font-medium ${
+                                  step.ok
                                     ? "bg-emerald-100 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-300"
                                     : "bg-red-100 text-red-700 dark:bg-red-900/40 dark:text-red-300"
                                 }`}
                               >
-                                {check.ok ? "pass" : "fail"}
+                                {step.ok ? "ok" : "failed"}
                               </span>
                             </div>
                           </summary>
-                          <div className="px-4 pb-4">
-                            <pre className="text-xs rounded-lg bg-neutral-100 dark:bg-neutral-900 p-3 overflow-auto max-h-56 whitespace-pre-wrap">
-                              {check.output || "(no output)"}
-                            </pre>
+                          <div className="px-4 pb-4 space-y-3">
+                            <div>
+                              <div className="text-xs font-semibold uppercase tracking-wider text-neutral-500 mb-1">
+                                Thinking
+                              </div>
+                              <p className="text-sm whitespace-pre-wrap">{step.thinking}</p>
+                            </div>
+                            <div>
+                              <div className="text-xs font-semibold uppercase tracking-wider text-neutral-500 mb-1">
+                                Action JSON
+                              </div>
+                              <pre className="text-xs rounded-lg bg-neutral-100 dark:bg-neutral-900 p-3 overflow-x-auto">
+                                {JSON.stringify(step.action, null, 2)}
+                              </pre>
+                            </div>
+                            <div>
+                              <div className="text-xs font-semibold uppercase tracking-wider text-neutral-500 mb-1">
+                                Tool Output
+                              </div>
+                              <pre className="text-xs rounded-lg bg-neutral-100 dark:bg-neutral-900 p-3 overflow-auto max-h-56 whitespace-pre-wrap">
+                                {step.output || "(no output)"}
+                              </pre>
+                            </div>
                           </div>
                         </details>
                       ))}
                     </div>
                   </div>
-                )}
 
-                {result && result.rollbackSummary.length > 0 && (
-                  <div className="rounded-xl border border-neutral-200 dark:border-neutral-800 overflow-hidden">
-                    <div className="px-4 py-3 border-b border-neutral-200 dark:border-neutral-800 bg-neutral-50 dark:bg-neutral-900/40">
-                      <h3 className="text-sm font-semibold">Rollback Summary</h3>
+                  {effectiveVerificationChecks.length > 0 && (
+                    <div className="rounded-xl border border-black/10 dark:border-white/10 overflow-hidden">
+                      <div className="px-4 py-3 border-b border-black/10 dark:border-white/10 bg-white/70 dark:bg-neutral-900/40">
+                        <h3 className="text-sm font-semibold">Verification Checks</h3>
+                      </div>
+                      <div className="divide-y divide-black/10 dark:divide-white/10">
+                        {effectiveVerificationChecks.map((check, index) => (
+                          <details key={`${check.attempt}-${index}`}>
+                            <summary className="list-none cursor-pointer px-4 py-3 hover:bg-black/5 dark:hover:bg-white/10 transition-colors">
+                              <div className="flex items-center justify-between gap-3">
+                                <div className="min-w-0">
+                                  <div className="text-xs text-neutral-500">Attempt {check.attempt}</div>
+                                  <div className="text-sm font-mono truncate">{commandToString(check.command)}</div>
+                                </div>
+                                <span
+                                  className={`shrink-0 px-2 py-1 rounded text-xs font-medium ${
+                                    check.ok
+                                      ? "bg-emerald-100 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-300"
+                                      : "bg-red-100 text-red-700 dark:bg-red-900/40 dark:text-red-300"
+                                  }`}
+                                >
+                                  {check.ok ? "pass" : "fail"}
+                                </span>
+                              </div>
+                            </summary>
+                            <div className="px-4 pb-4">
+                              <pre className="text-xs rounded-lg bg-neutral-100 dark:bg-neutral-900 p-3 overflow-auto max-h-56 whitespace-pre-wrap">
+                                {check.output || "(no output)"}
+                              </pre>
+                            </div>
+                          </details>
+                        ))}
+                      </div>
                     </div>
-                    <ul className="p-4 text-xs space-y-1">
-                      {result.rollbackSummary.map((line, index) => (
-                        <li key={index}>{line}</li>
-                      ))}
-                    </ul>
-                  </div>
-                )}
-
-                {result && result.changeJournal.length > 0 && (
-                  <div className="rounded-xl border border-neutral-200 dark:border-neutral-800 overflow-hidden">
-                    <div className="px-4 py-3 border-b border-neutral-200 dark:border-neutral-800 bg-neutral-50 dark:bg-neutral-900/40">
-                      <h3 className="text-sm font-semibold">Change Journal</h3>
-                    </div>
-                    <div className="divide-y divide-neutral-200 dark:divide-neutral-800">
-                      {result.changeJournal.map((entry, index) => (
-                        <div key={`${entry.timestamp}-${entry.path}-${index}`} className="px-4 py-3">
-                          <div className="text-xs text-neutral-500">
-                            {entry.timestamp}
-                          </div>
-                          <div className="text-sm font-mono">
-                            [{entry.op}] {entry.path}
-                          </div>
-                          <div className="text-xs mt-1 whitespace-pre-wrap">{entry.details}</div>
-                        </div>
-                      ))}
-                    </div>
-                  </div>
-                )}
-            </>
-          </div>
-
-          <aside className="min-h-0 overflow-y-auto p-5 space-y-3 bg-neutral-50 dark:bg-neutral-900/30">
-            <div className="rounded-xl border border-neutral-200 dark:border-neutral-800 bg-white dark:bg-neutral-900 p-3 space-y-2">
-              <div className="flex items-center justify-between gap-2">
-                <h3 className="text-sm font-semibold">Long-term Memory</h3>
-                <button
-                  onClick={() => void refreshMemoryList()}
-                  className="text-xs px-2 py-1 rounded border border-neutral-300 dark:border-neutral-700 hover:bg-neutral-100 dark:hover:bg-neutral-800 transition-colors cursor-pointer"
-                  disabled={memoryLoading}
-                >
-                  {memoryLoading ? "Loading..." : "Refresh"}
-                </button>
-              </div>
-
-              <div className="flex items-center gap-2">
-                <input
-                  type="text"
-                  value={memoryQuery}
-                  onChange={(event) => setMemoryQuery(event.target.value)}
-                  onKeyDown={(event) => {
-                    if (event.key === "Enter") {
-                      event.preventDefault();
-                      void retrieveMemoryContextForQuery();
-                    }
-                  }}
-                  placeholder="Retrieve memory by query..."
-                  className="min-w-0 flex-1 rounded border border-neutral-300 dark:border-neutral-700 px-2 py-1 text-xs bg-white dark:bg-neutral-950"
-                />
-                <button
-                  onClick={() => void retrieveMemoryContextForQuery()}
-                  className="text-xs px-2 py-1 rounded border border-neutral-300 dark:border-neutral-700 hover:bg-neutral-100 dark:hover:bg-neutral-800 transition-colors cursor-pointer"
-                  disabled={memoryRetrieveLoading || memoryQuery.trim().length === 0}
-                >
-                  {memoryRetrieveLoading ? "..." : "Retrieve"}
-                </button>
-              </div>
-
-              <div className="flex items-center gap-2">
-                <button
-                  onClick={() => void exportMemoryJson()}
-                  className="text-xs px-2 py-1 rounded border border-neutral-300 dark:border-neutral-700 hover:bg-neutral-100 dark:hover:bg-neutral-800 transition-colors cursor-pointer"
-                >
-                  Export
-                </button>
-                <select
-                  value={memoryImportMode}
-                  onChange={(event) =>
-                    setMemoryImportMode(event.target.value === "replace" ? "replace" : "merge")
-                  }
-                  className="min-w-0 flex-1 rounded border border-neutral-300 dark:border-neutral-700 px-2 py-1 text-xs bg-white dark:bg-neutral-950"
-                >
-                  <option value="merge">Import merge</option>
-                  <option value="replace">Import replace</option>
-                </select>
-                <button
-                  onClick={() => memoryImportInputRef.current?.click()}
-                  className="text-xs px-2 py-1 rounded border border-neutral-300 dark:border-neutral-700 hover:bg-neutral-100 dark:hover:bg-neutral-800 transition-colors cursor-pointer"
-                >
-                  Import
-                </button>
-                <input
-                  ref={memoryImportInputRef}
-                  type="file"
-                  accept="application/json"
-                  className="hidden"
-                  onChange={(event) => {
-                    const file = event.target.files?.[0];
-                    event.target.value = "";
-                    if (!file) return;
-                    void importMemoryJson(file, memoryImportMode);
-                  }}
-                />
-              </div>
-
-              {memoryError && (
-                <p className="text-xs text-red-600 dark:text-red-400">{memoryError}</p>
-              )}
-
-              {latestContinuation && (
-                <details className="rounded border border-neutral-200 dark:border-neutral-800 px-2 py-1">
-                  <summary className="cursor-pointer text-xs text-neutral-500">
-                    Latest continuation ({latestContinuation.executionMode})
-                  </summary>
-                  <div className="mt-1 space-y-1 text-[11px]">
-                    <div>Run: <span className="font-mono">{latestContinuation.runId}</span></div>
-                    <div>Goal: <span className="font-mono">{latestContinuation.goal}</span></div>
-                    <div>Summary: <span className="font-mono">{latestContinuation.summary}</span></div>
-                  </div>
-                </details>
-              )}
-
-              {memoryContextBlock && (
-                <details className="rounded border border-neutral-200 dark:border-neutral-800 px-2 py-1">
-                  <summary className="cursor-pointer text-xs text-neutral-500">
-                    Retrieved context preview
-                  </summary>
-                  <pre className="mt-1 text-[11px] rounded bg-neutral-100 dark:bg-neutral-950 p-2 max-h-44 overflow-auto whitespace-pre-wrap">
-                    {memoryContextBlock}
-                  </pre>
-                </details>
-              )}
-
-              {memoryDiagnostics && (
-                <div className="rounded border border-neutral-200 dark:border-neutral-800 px-2 py-1 text-[11px] space-y-1">
-                  <div>
-                    conflicts:{" "}
-                    <span className="font-mono">{memoryDiagnostics.conflictCount}</span>
-                  </div>
-                  <div>
-                    evidence gate:{" "}
-                    <span className="font-mono">
-                      {String(memoryDiagnostics.requiresVerificationBeforeMutation)}
-                    </span>
-                  </div>
-                  {memoryDiagnostics.guidance.length > 0 && (
-                    <ul className="list-disc list-inside text-neutral-500">
-                      {memoryDiagnostics.guidance.slice(0, 2).map((item, index) => (
-                        <li key={`memory-guidance-${index}`}>{item}</li>
-                      ))}
-                    </ul>
                   )}
                 </div>
+              </details>
+
+              {expertMode && (
+                <details
+                  className={cardClass}
+                  open={projectOpen}
+                  onToggle={(event) => setProjectOpen(event.currentTarget.open)}
+                >
+                  <summary className={`${cardHeaderClass} ${summaryClass}`}>
+                    Project Intelligence
+                  </summary>
+                  <div className={`${cardBodyClass} space-y-4`}>
+                    {result && (
+                      <div className="rounded-xl border border-black/10 dark:border-white/10 overflow-hidden">
+                        <div className="px-4 py-3 border-b border-black/10 dark:border-white/10 bg-white/70 dark:bg-neutral-900/40">
+                          <h3 className="text-sm font-semibold">Project Digest</h3>
+                        </div>
+                        <div className="p-4 space-y-2 text-xs">
+                          <div>
+                            Workspace: <span className="font-mono">{result.projectDigest.workspace}</span>
+                          </div>
+                          <div>
+                            Language hints:{" "}
+                            <span className="font-mono">
+                              {result.projectDigest.languageHints.join(", ") || "(none)"}
+                            </span>
+                          </div>
+                          <div>
+                            Has tests: <span className="font-mono">{String(result.projectDigest.hasTests)}</span>
+                          </div>
+                          <div>
+                            Key directories:{" "}
+                            <span className="font-mono">
+                              {result.projectDigest.keyDirectories.join(", ") || "(none)"}
+                            </span>
+                          </div>
+                          <details>
+                            <summary className="cursor-pointer text-xs text-neutral-500">Tree preview</summary>
+                            <pre className="mt-2 text-[11px] rounded bg-neutral-100 dark:bg-neutral-900 p-3 max-h-56 overflow-auto whitespace-pre-wrap">
+                              {result.projectDigest.treePreview || "(none)"}
+                            </pre>
+                          </details>
+                        </div>
+                      </div>
+                    )}
+
+                    {result && (
+                      <div className="rounded-xl border border-black/10 dark:border-white/10 overflow-hidden">
+                        <div className="px-4 py-3 border-b border-black/10 dark:border-white/10 bg-white/70 dark:bg-neutral-900/40">
+                          <h3 className="text-sm font-semibold">Project Intelligence</h3>
+                        </div>
+                        <div className="p-4 space-y-3 text-xs">
+                          <div>
+                            Generated:{" "}
+                            <span className="font-mono">
+                              {result.projectIntelligence.generatedAt || "(unknown)"}
+                            </span>
+                          </div>
+                          <div>
+                            Workspace:{" "}
+                            <span className="font-mono">
+                              {result.projectIntelligence.workspace || result.projectDigest.workspace}
+                            </span>
+                          </div>
+                          <div>
+                            Summary:{" "}
+                            <span className="font-mono">
+                              {result.projectIntelligence.summary || "(none)"}
+                            </span>
+                          </div>
+                          <div>
+                            Stack:{" "}
+                            <span className="font-mono">
+                              {result.projectIntelligence.stack.join(", ") || "(none)"}
+                            </span>
+                          </div>
+                          <div>
+                            Top directories:{" "}
+                            <span className="font-mono">
+                              {result.projectIntelligence.topDirectories.join(", ") || "(none)"}
+                            </span>
+                          </div>
+                          <div>
+                            Detected test files:{" "}
+                            <span className="font-mono">{result.projectIntelligence.testFileCount}</span>
+                          </div>
+
+                          <details open>
+                            <summary className="cursor-pointer text-xs text-neutral-500">Risk signals</summary>
+                            <div className="mt-2 space-y-2">
+                              {result.projectIntelligence.signals.length === 0 ? (
+                                <p className="text-[11px] text-neutral-500">(none)</p>
+                              ) : (
+                                result.projectIntelligence.signals.map((signal) => (
+                                  <div
+                                    key={signal.key}
+                                    className="rounded border border-black/10 dark:border-white/10 p-2 bg-white/80 dark:bg-neutral-900"
+                                  >
+                                    <div className="flex items-center justify-between gap-2">
+                                      <div className="font-medium">{signal.label}</div>
+                                      <span
+                                        className={`px-1.5 py-0.5 rounded text-[11px] ${signalBadgeClass(signal.severity)}`}
+                                      >
+                                        {signal.severity} • {signal.count}
+                                      </span>
+                                    </div>
+                                    {signal.samples.length > 0 && (
+                                      <details className="mt-1">
+                                        <summary className="cursor-pointer text-[11px] text-neutral-500">
+                                          samples ({signal.samples.length})
+                                        </summary>
+                                        <pre className="mt-1 text-[11px] rounded bg-neutral-100 dark:bg-neutral-900 p-2 max-h-48 overflow-auto whitespace-pre-wrap">
+                                          {signal.samples.join("\n")}
+                                        </pre>
+                                      </details>
+                                    )}
+                                  </div>
+                                ))
+                              )}
+                            </div>
+                          </details>
+
+                          <details>
+                            <summary className="cursor-pointer text-xs text-neutral-500">Top hotspots</summary>
+                            <div className="mt-2 space-y-1">
+                              {result.projectIntelligence.hotspots.length === 0 ? (
+                                <p className="text-[11px] text-neutral-500">(none)</p>
+                              ) : (
+                                result.projectIntelligence.hotspots.slice(0, 20).map((hotspot) => (
+                                  <div
+                                    key={hotspot.path}
+                                    className="flex items-center justify-between gap-2 rounded border border-black/10 dark:border-white/10 px-2 py-1 bg-white/80 dark:bg-neutral-900"
+                                  >
+                                    <span className="font-mono truncate">{hotspot.path}</span>
+                                    <span className="font-mono">{hotspot.lines} lines</span>
+                                  </div>
+                                ))
+                              )}
+                            </div>
+                          </details>
+
+                          <details>
+                            <summary className="cursor-pointer text-xs text-neutral-500">
+                              Module edges ({result.projectIntelligence.moduleEdges.length})
+                            </summary>
+                            <pre className="mt-2 text-[11px] rounded bg-neutral-100 dark:bg-neutral-900 p-3 max-h-56 overflow-auto whitespace-pre-wrap">
+                              {result.projectIntelligence.moduleEdges.length > 0
+                                ? result.projectIntelligence.moduleEdges
+                                    .slice(0, 80)
+                                    .map((edge) => `${edge.from} -> ${edge.to}`)
+                                    .join("\n")
+                                : "(none)"}
+                            </pre>
+                          </details>
+                        </div>
+                      </div>
+                    )}
+
+                    {result && result.teamRoster.length > 0 && (
+                      <div className="rounded-xl border border-black/10 dark:border-white/10 overflow-hidden">
+                        <div className="px-4 py-3 border-b border-black/10 dark:border-white/10 bg-white/70 dark:bg-neutral-900/40">
+                          <h3 className="text-sm font-semibold">
+                            Virtual Team Roster ({result.teamRoster.length})
+                          </h3>
+                        </div>
+                        <div className="p-4">
+                          <ul className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2 text-xs">
+                            {result.teamRoster.map((role, index) => (
+                              <li
+                                key={`${role}-${index}`}
+                                className="rounded border border-black/10 dark:border-white/10 px-2 py-1.5 bg-white/80 dark:bg-neutral-900"
+                              >
+                                {index + 1}. {role}
+                              </li>
+                            ))}
+                          </ul>
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                </details>
               )}
 
-              {memoryEntries.length === 0 ? (
-                <p className="text-xs text-neutral-400">
-                  {memoryLoading ? "Loading memory..." : "No memory entries yet."}
-                </p>
-              ) : (
-                <div className="space-y-2 max-h-80 overflow-auto pr-1">
-                  {memoryEntries.slice(0, 24).map((entry) => (
-                    <div
-                      key={entry.id}
-                      className="rounded border border-neutral-200 dark:border-neutral-800 p-2 bg-neutral-50 dark:bg-neutral-950"
-                    >
-                      <div className="flex items-center justify-between gap-2">
-                        <span className="text-[11px] font-medium truncate">
-                          {entry.title}
-                        </span>
-                        <span className="text-[10px] text-neutral-500">
-                          {entry.type}
-                        </span>
+              {expertMode && (
+                <details
+                  className={cardClass}
+                  open={workspaceOpen}
+                  onToggle={(event) => setWorkspaceOpen(event.currentTarget.open)}
+                >
+                  <summary className={`${cardHeaderClass} ${summaryClass}`}>
+                    Workspace & Diagnostics
+                  </summary>
+                  <div className={`${cardBodyClass} space-y-4`}>
+                    <div className="rounded-xl border border-black/10 dark:border-white/10 overflow-hidden">
+                      <div className="px-4 py-3 border-b border-black/10 dark:border-white/10 bg-white/70 dark:bg-neutral-900/40">
+                        <h3 className="text-sm font-semibold">Workspace Access Scope</h3>
                       </div>
-                      <p className="mt-1 text-[11px] text-neutral-600 dark:text-neutral-300 line-clamp-3">
-                        {entry.content}
-                      </p>
-                      <div className="mt-2 flex items-center justify-between gap-2">
-                        <span className="text-[10px] text-neutral-500">
-                          confidence=
-                          {(typeof entry.confidenceScore === "number"
-                            ? entry.confidenceScore
-                            : entry.successScore
-                          ).toFixed(2)}{" "}
-                          uses={entry.useCount}
-                        </span>
-                        <div className="flex items-center gap-1">
-                          <button
-                            onClick={() => void toggleMemoryPin(entry)}
-                            className="text-[10px] px-1.5 py-1 rounded border border-neutral-300 dark:border-neutral-700 hover:bg-neutral-100 dark:hover:bg-neutral-800 cursor-pointer"
-                          >
-                            {entry.pinned ? "Unpin" : "Pin"}
-                          </button>
-                          <button
-                            onClick={() => void forgetMemory(entry.id)}
-                            className="text-[10px] px-1.5 py-1 rounded border border-red-300 text-red-600 dark:border-red-800 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-950/40 cursor-pointer"
-                          >
-                            Forget
-                          </button>
+                      <div className="p-4 space-y-2">
+                        <div className="text-xs text-neutral-500">
+                          Files visible to the agent before execution.
+                        </div>
+                        {workspaceLoading ? (
+                          <p className="text-xs text-neutral-500">Loading workspace files...</p>
+                        ) : workspaceError ? (
+                          <p className="text-xs text-red-600 dark:text-red-400">{workspaceError}</p>
+                        ) : visibleWorkspaceFiles.length === 0 ? (
+                          <p className="text-xs text-neutral-500">(no files discovered)</p>
+                        ) : (
+                          <>
+                            <ul className="space-y-1 max-h-60 overflow-auto pr-1">
+                              {visibleWorkspaceFiles.map((filePath) => (
+                                <li
+                                  key={`scope-${filePath}`}
+                                  className="text-xs font-mono rounded border border-black/10 dark:border-white/10 px-2 py-1 bg-white/80 dark:bg-neutral-900"
+                                >
+                                  {filePath}
+                                </li>
+                              ))}
+                            </ul>
+                            {workspaceFiles.length > visibleWorkspaceFiles.length && (
+                              <p className="text-[11px] text-neutral-500">
+                                Showing first {visibleWorkspaceFiles.length} of {workspaceFiles.length} files.
+                              </p>
+                            )}
+                          </>
+                        )}
+                      </div>
+                    </div>
+
+                    <div className="rounded-xl border border-black/10 dark:border-white/10 overflow-hidden">
+                      <div className="px-4 py-3 border-b border-black/10 dark:border-white/10 bg-white/70 dark:bg-neutral-900/40">
+                        <h3 className="text-sm font-semibold">File Activity</h3>
+                      </div>
+                      <div className="p-4 grid grid-cols-1 md:grid-cols-2 gap-4">
+                        <div>
+                          <div className="text-xs font-semibold uppercase tracking-wider text-neutral-500 mb-2">
+                            Files Accessed ({filesAccessed.length})
+                          </div>
+                          {filesAccessed.length === 0 ? (
+                            <p className="text-xs text-neutral-500">(none yet)</p>
+                          ) : (
+                            <ul className="space-y-1 max-h-60 overflow-auto pr-1">
+                              {filesAccessed.map((filePath) => (
+                                <li
+                                  key={`access-${filePath}`}
+                                  className="text-xs font-mono rounded border border-black/10 dark:border-white/10 px-2 py-1 bg-white/80 dark:bg-neutral-900"
+                                >
+                                  {filePath}
+                                </li>
+                              ))}
+                            </ul>
+                          )}
+                        </div>
+
+                        <div>
+                          <div className="text-xs font-semibold uppercase tracking-wider text-neutral-500 mb-2">
+                            Files Edited ({filesEdited.length})
+                          </div>
+                          {filesEdited.length === 0 ? (
+                            <p className="text-xs text-neutral-500">(none yet)</p>
+                          ) : (
+                            <ul className="space-y-1 max-h-60 overflow-auto pr-1">
+                              {filesEdited.map((filePath) => (
+                                <li
+                                  key={`edited-${filePath}`}
+                                  className="text-xs font-mono rounded border border-black/10 dark:border-white/10 px-2 py-1 bg-white/80 dark:bg-neutral-900"
+                                >
+                                  {filePath}
+                                </li>
+                              ))}
+                            </ul>
+                          )}
                         </div>
                       </div>
                     </div>
-                  ))}
-                </div>
-              )}
-            </div>
 
-            <div className="flex items-center justify-between">
-              <h3 className="text-sm font-semibold">Recent Runs</h3>
-              {history.length > 0 && (
-                <button
-                  onClick={() => setHistory([])}
-                  className="text-xs text-neutral-500 hover:text-neutral-700 dark:hover:text-neutral-300 cursor-pointer"
-                >
-                  Clear
-                </button>
-              )}
-            </div>
+                    {result && result.preflightChecks.length > 0 && (
+                      <div className="rounded-xl border border-black/10 dark:border-white/10 overflow-hidden">
+                        <div className="px-4 py-3 border-b border-black/10 dark:border-white/10 bg-white/70 dark:bg-neutral-900/40">
+                          <h3 className="text-sm font-semibold">Preflight Checks</h3>
+                        </div>
+                        <div className="divide-y divide-black/10 dark:divide-white/10">
+                          {result.preflightChecks.map((check, index) => (
+                            <details key={`${check.attempt}-preflight-${index}`}>
+                              <summary className="list-none cursor-pointer px-4 py-3 hover:bg-black/5 dark:hover:bg-white/10 transition-colors">
+                                <div className="flex items-center justify-between gap-3">
+                                  <div className="min-w-0">
+                                    <div className="text-xs text-neutral-500">Preflight</div>
+                                    <div className="text-sm font-mono truncate">
+                                      {commandToString(check.command)}
+                                    </div>
+                                  </div>
+                                  <span
+                                    className={`shrink-0 px-2 py-1 rounded text-xs font-medium ${
+                                      check.ok
+                                        ? "bg-emerald-100 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-300"
+                                        : "bg-red-100 text-red-700 dark:bg-red-900/40 dark:text-red-300"
+                                    }`}
+                                  >
+                                    {check.ok ? "pass" : "fail"}
+                                  </span>
+                                </div>
+                              </summary>
+                              <div className="px-4 pb-4">
+                                <pre className="text-xs rounded-lg bg-neutral-100 dark:bg-neutral-900 p-3 overflow-auto max-h-56 whitespace-pre-wrap">
+                                  {check.output || "(no output)"}
+                                </pre>
+                              </div>
+                            </details>
+                          ))}
+                        </div>
+                      </div>
+                    )}
 
-            {history.length === 0 ? (
-              <p className="text-xs text-neutral-400">No run history yet.</p>
-            ) : (
-              <div className="space-y-2">
-                {history.map((item, index) => (
-                  <div
-                    key={`${item.finishedAt}-${index}`}
-                    className="rounded-lg border border-neutral-200 dark:border-neutral-800 bg-white dark:bg-neutral-900 p-3"
-                  >
-                    <div className="flex items-center justify-between gap-2">
-                      <span className={`px-2 py-0.5 rounded text-[11px] font-medium ${statusBadgeClass(item.status)}`}>
-                        {item.status.replace("_", " ")}
-                      </span>
-                      <span className="text-[11px] text-neutral-500">
-                        {new Date(item.finishedAt).toLocaleString()}
-                      </span>
-                    </div>
+                    {result && result.rollbackSummary.length > 0 && (
+                      <div className="rounded-xl border border-black/10 dark:border-white/10 overflow-hidden">
+                        <div className="px-4 py-3 border-b border-black/10 dark:border-white/10 bg-white/70 dark:bg-neutral-900/40">
+                          <h3 className="text-sm font-semibold">Rollback Summary</h3>
+                        </div>
+                        <ul className="p-4 text-xs space-y-1">
+                          {result.rollbackSummary.map((line, index) => (
+                            <li key={index}>{line}</li>
+                          ))}
+                        </ul>
+                      </div>
+                    )}
 
-                    <p className="mt-2 text-xs text-neutral-700 dark:text-neutral-300 line-clamp-3">
-                      {item.goal}
-                    </p>
-
-                    <div className="mt-2 flex items-center gap-2">
-                      <button
-                        onClick={() => loadHistoryGoal(item)}
-                        className="text-xs px-2 py-1 rounded border border-neutral-300 dark:border-neutral-700 hover:bg-neutral-100 dark:hover:bg-neutral-800 transition-colors cursor-pointer"
-                      >
-                        Load
-                      </button>
-                      {onPublishReport && (
-                        <button
-                          onClick={() => onPublishReport(formatRunReport(item))}
-                          className="text-xs px-2 py-1 rounded border border-neutral-300 dark:border-neutral-700 hover:bg-neutral-100 dark:hover:bg-neutral-800 transition-colors cursor-pointer"
-                        >
-                          Publish
-                        </button>
-                      )}
-                      <button
-                        onClick={() => downloadTelemetryJson(item)}
-                        className="text-xs px-2 py-1 rounded border border-neutral-300 dark:border-neutral-700 hover:bg-neutral-100 dark:hover:bg-neutral-800 transition-colors cursor-pointer"
-                      >
-                        Export JSON
-                      </button>
-                    </div>
+                    {result && result.changeJournal.length > 0 && (
+                      <div className="rounded-xl border border-black/10 dark:border-white/10 overflow-hidden">
+                        <div className="px-4 py-3 border-b border-black/10 dark:border-white/10 bg-white/70 dark:bg-neutral-900/40">
+                          <h3 className="text-sm font-semibold">Change Journal</h3>
+                        </div>
+                        <div className="divide-y divide-black/10 dark:divide-white/10">
+                          {result.changeJournal.map((entry, index) => (
+                            <div key={`${entry.timestamp}-${entry.path}-${index}`} className="px-4 py-3">
+                              <div className="text-xs text-neutral-500">{entry.timestamp}</div>
+                              <div className="text-sm font-mono">
+                                [{entry.op}] {entry.path}
+                              </div>
+                              <div className="text-xs mt-1 whitespace-pre-wrap">{entry.details}</div>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    )}
                   </div>
-                ))}
-              </div>
-            )}
-          </aside>
+                </details>
+              )}
+            </div>
+
+            <aside className="space-y-6">
+              <details
+                className={cardClass}
+                open={historyOpen}
+                onToggle={(event) => setHistoryOpen(event.currentTarget.open)}
+              >
+                <summary className={`${cardHeaderClass} ${summaryClass}`}>Recent Runs</summary>
+                <div className={`${cardBodyClass} space-y-3`}>
+                  <div className="flex items-center justify-between">
+                    <h3 className="text-sm font-semibold">Run History</h3>
+                    {history.length > 0 && (
+                      <button
+                        onClick={() => setHistory([])}
+                        className="text-xs text-neutral-500 hover:text-neutral-700 dark:hover:text-neutral-300 cursor-pointer"
+                      >
+                        Clear
+                      </button>
+                    )}
+                  </div>
+
+                  {history.length === 0 ? (
+                    <p className="text-xs text-neutral-400">No run history yet.</p>
+                  ) : (
+                    <div className="space-y-2">
+                      {history.map((item, index) => (
+                        <div
+                          key={`${item.finishedAt}-${index}`}
+                          className="rounded-lg border border-black/10 dark:border-white/10 bg-white/80 dark:bg-neutral-900 p-3"
+                        >
+                          <div className="flex items-center justify-between gap-2">
+                            <span
+                              className={`px-2 py-0.5 rounded text-[11px] font-medium ${statusBadgeClass(item.status)}`}
+                            >
+                              {item.status.replace("_", " ")}
+                            </span>
+                            <span className="text-[11px] text-neutral-500">
+                              {new Date(item.finishedAt).toLocaleString()}
+                            </span>
+                          </div>
+
+                          <p className="mt-2 text-xs text-neutral-700 dark:text-neutral-300 line-clamp-3">
+                            {item.goal}
+                          </p>
+
+                          <div className="mt-2 flex items-center gap-2">
+                            <button
+                              onClick={() => loadHistoryGoal(item)}
+                              className="text-xs px-2 py-1 rounded border border-black/10 dark:border-white/10 hover:bg-black/5 dark:hover:bg-white/10 transition-colors cursor-pointer"
+                            >
+                              Load
+                            </button>
+                            {onPublishReport && (
+                              <button
+                                onClick={() => onPublishReport(formatRunReport(item))}
+                                className="text-xs px-2 py-1 rounded border border-black/10 dark:border-white/10 hover:bg-black/5 dark:hover:bg-white/10 transition-colors cursor-pointer"
+                              >
+                                Publish
+                              </button>
+                            )}
+                            <button
+                              onClick={() => downloadTelemetryJson(item)}
+                              className="text-xs px-2 py-1 rounded border border-black/10 dark:border-white/10 hover:bg-black/5 dark:hover:bg-white/10 transition-colors cursor-pointer"
+                            >
+                              Export JSON
+                            </button>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              </details>
+
+              <details
+                className={cardClass}
+                open={memoryOpen}
+                onToggle={(event) => setMemoryOpen(event.currentTarget.open)}
+              >
+                <summary className={`${cardHeaderClass} ${summaryClass}`}>Long-term Memory</summary>
+                <div className={`${cardBodyClass} space-y-3`}>
+                  <div className="flex items-center justify-between gap-2">
+                    <h3 className="text-sm font-semibold">Memory Vault</h3>
+                    <button
+                      onClick={() => void refreshMemoryList()}
+                      className="text-xs px-2 py-1 rounded border border-black/10 dark:border-white/10 hover:bg-black/5 dark:hover:bg-white/10 transition-colors cursor-pointer"
+                      disabled={memoryLoading}
+                    >
+                      {memoryLoading ? "Loading..." : "Refresh"}
+                    </button>
+                  </div>
+
+                  <div className="flex items-center gap-2">
+                    <input
+                      type="text"
+                      value={memoryQuery}
+                      onChange={(event) => setMemoryQuery(event.target.value)}
+                      onKeyDown={(event) => {
+                        if (event.key === "Enter") {
+                          event.preventDefault();
+                          void retrieveMemoryContextForQuery();
+                        }
+                      }}
+                      placeholder="Retrieve memory by query..."
+                      className="min-w-0 flex-1 rounded border border-black/10 dark:border-white/10 px-2 py-1 text-xs bg-white/80 dark:bg-neutral-950"
+                    />
+                    <button
+                      onClick={() => void retrieveMemoryContextForQuery()}
+                      className="text-xs px-2 py-1 rounded border border-black/10 dark:border-white/10 hover:bg-black/5 dark:hover:bg-white/10 transition-colors cursor-pointer"
+                      disabled={memoryRetrieveLoading || memoryQuery.trim().length === 0}
+                    >
+                      {memoryRetrieveLoading ? "..." : "Retrieve"}
+                    </button>
+                  </div>
+
+                  <div className="flex items-center gap-2">
+                    <button
+                      onClick={() => void exportMemoryJson()}
+                      className="text-xs px-2 py-1 rounded border border-black/10 dark:border-white/10 hover:bg-black/5 dark:hover:bg-white/10 transition-colors cursor-pointer"
+                    >
+                      Export
+                    </button>
+                    <select
+                      value={memoryImportMode}
+                      onChange={(event) =>
+                        setMemoryImportMode(event.target.value === "replace" ? "replace" : "merge")
+                      }
+                      className="min-w-0 flex-1 rounded border border-black/10 dark:border-white/10 px-2 py-1 text-xs bg-white/80 dark:bg-neutral-950"
+                    >
+                      <option value="merge">Import merge</option>
+                      <option value="replace">Import replace</option>
+                    </select>
+                    <button
+                      onClick={() => memoryImportInputRef.current?.click()}
+                      className="text-xs px-2 py-1 rounded border border-black/10 dark:border-white/10 hover:bg-black/5 dark:hover:bg-white/10 transition-colors cursor-pointer"
+                    >
+                      Import
+                    </button>
+                    <input
+                      ref={memoryImportInputRef}
+                      type="file"
+                      accept="application/json"
+                      className="hidden"
+                      onChange={(event) => {
+                        const file = event.target.files?.[0];
+                        event.target.value = "";
+                        if (!file) return;
+                        void importMemoryJson(file, memoryImportMode);
+                      }}
+                    />
+                  </div>
+
+                  {memoryError && (
+                    <p className="text-xs text-red-600 dark:text-red-400">{memoryError}</p>
+                  )}
+
+                  {latestContinuation && (
+                    <details className="rounded border border-black/10 dark:border-white/10 px-2 py-1">
+                      <summary className="cursor-pointer text-xs text-neutral-500">
+                        Latest continuation ({latestContinuation.executionMode})
+                      </summary>
+                      <div className="mt-1 space-y-1 text-[11px]">
+                        <div>
+                          Run: <span className="font-mono">{latestContinuation.runId}</span>
+                        </div>
+                        <div>
+                          Goal: <span className="font-mono">{latestContinuation.goal}</span>
+                        </div>
+                        <div>
+                          Summary:{" "}
+                          <span className="font-mono">{latestContinuation.summary}</span>
+                        </div>
+                      </div>
+                    </details>
+                  )}
+
+                  {memoryContextBlock && (
+                    <details className="rounded border border-black/10 dark:border-white/10 px-2 py-1">
+                      <summary className="cursor-pointer text-xs text-neutral-500">
+                        Retrieved context preview
+                      </summary>
+                      <pre className="mt-1 text-[11px] rounded bg-neutral-100 dark:bg-neutral-950 p-2 max-h-44 overflow-auto whitespace-pre-wrap">
+                        {memoryContextBlock}
+                      </pre>
+                    </details>
+                  )}
+
+                  {memoryDiagnostics && (
+                    <div className="rounded border border-black/10 dark:border-white/10 px-2 py-1 text-[11px] space-y-1">
+                      <div>
+                        conflicts: <span className="font-mono">{memoryDiagnostics.conflictCount}</span>
+                      </div>
+                      <div>
+                        evidence gate:{" "}
+                        <span className="font-mono">
+                          {String(memoryDiagnostics.requiresVerificationBeforeMutation)}
+                        </span>
+                      </div>
+                      {memoryDiagnostics.guidance.length > 0 && (
+                        <ul className="list-disc list-inside text-neutral-500">
+                          {memoryDiagnostics.guidance.slice(0, 2).map((item, index) => (
+                            <li key={`memory-guidance-${index}`}>{item}</li>
+                          ))}
+                        </ul>
+                      )}
+                    </div>
+                  )}
+
+                  {memoryEntries.length === 0 ? (
+                    <p className="text-xs text-neutral-400">
+                      {memoryLoading ? "Loading memory..." : "No memory entries yet."}
+                    </p>
+                  ) : (
+                    <div className="space-y-2 max-h-80 overflow-auto pr-1">
+                      {memoryEntries.slice(0, 24).map((entry) => (
+                        <div
+                          key={entry.id}
+                          className="rounded border border-black/10 dark:border-white/10 p-2 bg-white/80 dark:bg-neutral-950"
+                        >
+                          <div className="flex items-center justify-between gap-2">
+                            <span className="text-[11px] font-medium truncate">{entry.title}</span>
+                            <span className="text-[10px] text-neutral-500">{entry.type}</span>
+                          </div>
+                          <p className="mt-1 text-[11px] text-neutral-600 dark:text-neutral-300 line-clamp-3">
+                            {entry.content}
+                          </p>
+                          <div className="mt-2 flex items-center justify-between gap-2">
+                            <span className="text-[10px] text-neutral-500">
+                              confidence=
+                              {(typeof entry.confidenceScore === "number"
+                                ? entry.confidenceScore
+                                : entry.successScore
+                              ).toFixed(2)}{" "}
+                              uses={entry.useCount}
+                            </span>
+                            <div className="flex items-center gap-1">
+                              <button
+                                onClick={() => void toggleMemoryPin(entry)}
+                                className="text-[10px] px-1.5 py-1 rounded border border-black/10 dark:border-white/10 hover:bg-black/5 dark:hover:bg-white/10 cursor-pointer"
+                              >
+                                {entry.pinned ? "Unpin" : "Pin"}
+                              </button>
+                              <button
+                                onClick={() => void forgetMemory(entry.id)}
+                                className="text-[10px] px-1.5 py-1 rounded border border-red-300 text-red-600 dark:border-red-800 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-950/40 cursor-pointer"
+                              >
+                                Forget
+                              </button>
+                            </div>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              </details>
+            </aside>
+          </div>
         </div>
+      </div>
     </section>
   );
-
   if (embedded) {
     return panel;
   }

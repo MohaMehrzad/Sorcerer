@@ -59,6 +59,9 @@ const MAX_SKILL_FILES = 20;
 const MAX_ACTIVE_SKILLS = 8;
 const MAX_SKILL_CONTEXT_TOTAL_CHARS = 16000;
 const MAX_SKILL_CONTEXT_PER_FILE_CHARS = 3200;
+const STAGNATION_NO_MUTATION_ITERATIONS = 4;
+const STAGNATION_REPEAT_ACTION_ITERATIONS = 3;
+const MAX_STAGNATION_INTERVENTIONS = 4;
 
 const IGNORE = new Set([
   "node_modules",
@@ -2889,6 +2892,51 @@ function goalLikelyRequiresCodeMutation(goal: string): boolean {
   );
 }
 
+function summarizeActionForStagnation(action: AgentAction): string {
+  switch (action.type) {
+    case "read_file":
+      return `read_file:${action.path}`;
+    case "read_many_files":
+      return `read_many_files:${action.paths.slice(0, 4).join(",")}`;
+    case "search_files":
+      return `search_files:${action.pattern}:${action.glob || "*"}`;
+    case "run_command":
+      return `run_command:${stringifyCommand({
+        program: action.program,
+        args: action.args || [],
+        cwd: action.cwd,
+      })}`;
+    case "write_file":
+    case "append_file":
+    case "delete_file":
+      return `${action.type}:${action.path}`;
+    case "list_tree":
+      return `list_tree:${String(action.maxDepth ?? 4)}`;
+    case "web_search":
+      return `web_search:${action.query}`;
+    case "final":
+      return "final";
+    default:
+      return "unknown_action";
+  }
+}
+
+function buildMutationStagnationMessage(streak: number): string {
+  return [
+    `Stagnation guard: ${streak} consecutive non-mutation iterations on a coding goal.`,
+    "Stop exploring loops and execute one concrete file mutation now (write_file/append_file/delete_file) that directly advances the requested outcome.",
+    "Then continue verification.",
+  ].join("\n");
+}
+
+function buildRepeatedActionStagnationMessage(signature: string, streak: number): string {
+  return [
+    `Stagnation guard: repeated action pattern detected (${streak}x): ${signature}`,
+    "Do not repeat this same action again unless new evidence is required.",
+    "Choose a different high-leverage next action that changes state or verifies a new hypothesis.",
+  ].join("\n");
+}
+
 function isEvidenceAction(action: AgentAction): boolean {
   return (
     action.type === "read_file" ||
@@ -3451,6 +3499,11 @@ export async function runAutonomousAgent(
   let memoryDiagnosticsHint = "(none)";
   let requiresMemoryEvidenceBeforeMutation = false;
   let lastEvidenceIteration = 0;
+  const mutationGoal = goalLikelyRequiresCodeMutation(request.goal);
+  let noMutationStreak = 0;
+  let repeatedActionStreak = 0;
+  let lastActionSignature = "";
+  let stagnationInterventions = 0;
 
   try {
     throwIfAborted(hooks?.signal);
@@ -3790,6 +3843,63 @@ export async function runAutonomousAgent(
         ).catch(() => undefined);
       }
 
+      if (
+        mutationGoal &&
+        !request.dryRun &&
+        toolContext.fileWriteCount === 0 &&
+        noMutationStreak >= STAGNATION_NO_MUTATION_ITERATIONS &&
+        stagnationInterventions < MAX_STAGNATION_INTERVENTIONS
+      ) {
+        const guardMessage = buildMutationStagnationMessage(noMutationStreak);
+        history.push({
+          role: "user",
+          content: guardMessage,
+        });
+        emit(hooks, {
+          type: "status",
+          data: {
+            message:
+              "Stagnation guard engaged: forcing concrete file mutation on coding goal.",
+          },
+        });
+        await safeAppendEvent("stagnation_guard_triggered", {
+          iteration,
+          reason: "no_mutation_progress",
+          noMutationStreak,
+          fileWriteCount: toolContext.fileWriteCount,
+        });
+        noMutationStreak = 0;
+        repeatedActionStreak = 0;
+        stagnationInterventions += 1;
+      } else if (
+        repeatedActionStreak >= STAGNATION_REPEAT_ACTION_ITERATIONS &&
+        stagnationInterventions < MAX_STAGNATION_INTERVENTIONS
+      ) {
+        const guardMessage = buildRepeatedActionStagnationMessage(
+          lastActionSignature || "(unknown)",
+          repeatedActionStreak
+        );
+        history.push({
+          role: "user",
+          content: guardMessage,
+        });
+        emit(hooks, {
+          type: "status",
+          data: {
+            message:
+              "Stagnation guard engaged: repeated action loop detected, forcing strategy change.",
+          },
+        });
+        await safeAppendEvent("stagnation_guard_triggered", {
+          iteration,
+          reason: "repeated_action_loop",
+          repeatedActionStreak,
+          lastActionSignature,
+        });
+        repeatedActionStreak = 0;
+        stagnationInterventions += 1;
+      }
+
       emit(hooks, {
         type: "status",
         data: {
@@ -3839,7 +3949,7 @@ export async function runAutonomousAgent(
       if (
         decision.action.type === "final" &&
         !request.dryRun &&
-        goalLikelyRequiresCodeMutation(request.goal) &&
+        mutationGoal &&
         toolContext.fileWriteCount === 0
       ) {
         const guardMessage =
@@ -3865,6 +3975,14 @@ export async function runAutonomousAgent(
           iteration,
           goal: request.goal,
         });
+        noMutationStreak += 1;
+        const signature = summarizeActionForStagnation(decision.action);
+        if (signature === lastActionSignature) {
+          repeatedActionStreak += 1;
+        } else {
+          repeatedActionStreak = 1;
+          lastActionSignature = signature;
+        }
         continue;
       }
 
@@ -4024,6 +4142,24 @@ export async function runAutonomousAgent(
 
       if (step.ok && isEvidenceAction(decision.action)) {
         lastEvidenceIteration = iteration;
+      }
+
+      const currentActionSignature = summarizeActionForStagnation(decision.action);
+      if (currentActionSignature === lastActionSignature) {
+        repeatedActionStreak += 1;
+      } else {
+        repeatedActionStreak = 1;
+        lastActionSignature = currentActionSignature;
+      }
+
+      if (mutationGoal && !request.dryRun && toolContext.fileWriteCount === 0) {
+        if (step.ok && isMutationAction(decision.action)) {
+          noMutationStreak = 0;
+        } else {
+          noMutationStreak += 1;
+        }
+      } else {
+        noMutationStreak = 0;
       }
 
       history.push({

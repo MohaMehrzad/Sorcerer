@@ -1,7 +1,6 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
-import Sidebar from "@/components/Sidebar";
 import AutonomousPanel from "@/components/AutonomousPanel";
 import BotOnboarding from "@/components/BotOnboarding";
 import { apiFetch } from "@/lib/client/apiFetch";
@@ -19,7 +18,6 @@ export default function Home() {
   const [botProfile, setBotProfile] = useState<BotProfile | null>(null);
   const [workspaces, setWorkspaces] = useState<WorkspaceEntry[]>([]);
   const [activeWorkspaceId, setActiveWorkspaceId] = useState<string | null>(null);
-  const [sidebarOpen, setSidebarOpen] = useState(false);
   const [workspacePickerBusy, setWorkspacePickerBusy] = useState(false);
   const [workspacePickerError, setWorkspacePickerError] = useState<string | null>(null);
   const [onboardingOpen, setOnboardingOpen] = useState(false);
@@ -217,59 +215,106 @@ export default function Home() {
     return (
       <div className="flex items-center justify-center h-dvh">
         <div className="flex gap-1">
-          <span className="w-2.5 h-2.5 rounded-full bg-blue-500 animate-bounce [animation-delay:-0.3s]" />
-          <span className="w-2.5 h-2.5 rounded-full bg-blue-500 animate-bounce [animation-delay:-0.15s]" />
-          <span className="w-2.5 h-2.5 rounded-full bg-blue-500 animate-bounce" />
+          <span className="w-2.5 h-2.5 rounded-full bg-emerald-500 animate-bounce [animation-delay:-0.3s]" />
+          <span className="w-2.5 h-2.5 rounded-full bg-emerald-500 animate-bounce [animation-delay:-0.15s]" />
+          <span className="w-2.5 h-2.5 rounded-full bg-emerald-500 animate-bounce" />
         </div>
       </div>
     );
   }
 
   return (
-    <div className="flex h-dvh bg-white dark:bg-neutral-950">
-      <Sidebar
-        workspaces={workspaces}
-        activeWorkspaceId={activeWorkspaceId}
-        onSelectWorkspace={handleSelectWorkspace}
-        onNewWorkspace={handleNewWorkspace}
-        onDeleteWorkspace={handleDeleteWorkspace}
-        botName={botProfile?.botName || "Assistant"}
-        modelName={botProfile?.model || "Not configured"}
-        workspacePath={activeWorkspacePath}
-        onOpenBotSetup={() => openOnboarding(botProfile)}
-        newWorkspaceLoading={workspacePickerBusy}
-        open={sidebarOpen}
-        onClose={() => setSidebarOpen(false)}
-      />
+    <div className="flex min-h-dvh flex-col">
+      <header className="border-b border-black/10 bg-white/70 backdrop-blur">
+        <div className="px-6 py-4 flex flex-wrap items-center justify-between gap-4">
+          <div>
+            <p className="text-[11px] uppercase tracking-[0.3em] text-neutral-500">
+              Sorcerer
+            </p>
+            <h1 className="text-lg font-semibold text-neutral-900 dark:text-neutral-100">
+              Autonomous Coding Studio
+            </h1>
+            <p className="text-xs text-neutral-500">
+              Configure a workspace, set a goal, and let the agent run.
+            </p>
+          </div>
 
-      <main className="flex-1 min-w-0 relative">
-        <button
-          onClick={() => setSidebarOpen(true)}
-          className="md:hidden absolute top-3 left-3 z-30 p-2 rounded-lg border border-neutral-300 dark:border-neutral-700 bg-white dark:bg-neutral-900 hover:bg-neutral-100 dark:hover:bg-neutral-800 transition-colors cursor-pointer"
-          title="Open workspace list"
-        >
-          <svg
-            width="20"
-            height="20"
-            viewBox="0 0 24 24"
-            fill="none"
-            stroke="currentColor"
-            strokeWidth="2"
-            strokeLinecap="round"
-            strokeLinejoin="round"
-          >
-            <line x1="3" y1="12" x2="21" y2="12" />
-            <line x1="3" y1="6" x2="21" y2="6" />
-            <line x1="3" y1="18" x2="21" y2="18" />
-          </svg>
-        </button>
+          <div className="flex flex-wrap items-center gap-3">
+            <div className="min-w-[240px]">
+              <div className="text-[11px] font-semibold uppercase tracking-wider text-neutral-500">
+                Workspace
+              </div>
+              <div className="mt-1 flex items-center gap-2">
+                <select
+                  value={activeWorkspaceId || ""}
+                  onChange={(event) => handleSelectWorkspace(event.target.value)}
+                  disabled={workspaces.length === 0}
+                  className="min-w-[200px] rounded-xl border border-black/10 bg-white/80 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-emerald-300"
+                >
+                  <option value="" disabled>
+                    {workspaces.length === 0 ? "No workspaces yet" : "Select workspace"}
+                  </option>
+                  {workspaces.map((workspace) => (
+                    <option key={workspace.id} value={workspace.id}>
+                      {workspace.name}
+                    </option>
+                  ))}
+                </select>
+                <button
+                  onClick={handleNewWorkspace}
+                  disabled={workspacePickerBusy}
+                  className="px-3 py-2 rounded-xl bg-emerald-600 text-white text-sm font-medium hover:bg-emerald-700 disabled:opacity-60 disabled:cursor-not-allowed transition-colors cursor-pointer"
+                >
+                  {workspacePickerBusy ? "Opening..." : "New"}
+                </button>
+                <button
+                  onClick={() => openOnboarding(botProfile)}
+                  className="px-3 py-2 rounded-xl border border-black/10 bg-white/80 text-sm hover:bg-white transition-colors cursor-pointer"
+                >
+                  Setup
+                </button>
+                <button
+                  onClick={() => activeWorkspaceId && handleDeleteWorkspace(activeWorkspaceId)}
+                  disabled={!activeWorkspaceId}
+                  className="px-3 py-2 rounded-xl border border-red-200 text-red-600 text-sm hover:bg-red-50 disabled:opacity-50 disabled:cursor-not-allowed transition-colors cursor-pointer"
+                >
+                  Remove
+                </button>
+              </div>
+              <div
+                className="mt-1 text-[11px] text-neutral-500 font-mono truncate"
+                title={activeWorkspacePath}
+              >
+                {activeWorkspacePath}
+              </div>
+            </div>
+
+            <div className="flex flex-col gap-1">
+              <span className="text-[11px] uppercase tracking-wider text-neutral-500">
+                Active Bot
+              </span>
+              <div className="flex items-center gap-2">
+                <span className="px-2.5 py-1 rounded-full bg-emerald-100 text-emerald-700 text-xs font-medium">
+                  {botProfile?.botName || "Assistant"}
+                </span>
+                <span className="px-2.5 py-1 rounded-full bg-black/5 text-xs font-mono text-neutral-600">
+                  {botProfile?.model || "Not configured"}
+                </span>
+              </div>
+            </div>
+          </div>
+        </div>
 
         {workspacePickerError && (
-          <div className="absolute top-3 left-1/2 -translate-x-1/2 z-20 max-w-[90%] rounded-lg border border-red-300 bg-red-50 px-3 py-2 text-xs text-red-700 dark:border-red-800 dark:bg-red-900/30 dark:text-red-300">
-            {workspacePickerError}
+          <div className="px-6 pb-4">
+            <div className="rounded-xl border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-700">
+              {workspacePickerError}
+            </div>
           </div>
         )}
+      </header>
 
+      <main className="flex-1 min-h-0">
         <AutonomousPanel
           embedded
           botName={botProfile?.botName || "Assistant"}

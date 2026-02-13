@@ -250,6 +250,13 @@ function buildSummary(intel: Omit<ProjectIntelligence, "summary">): string {
   return parts.join(" | ");
 }
 
+function redactSignalSample(sample: string): string {
+  const match = sample.match(/^([^:]+):(\d+):\s*(.*)$/);
+  if (!match) return "[redacted]";
+  const [, filePath, lineNumber] = match;
+  return `${filePath}:${lineNumber}: [redacted]`;
+}
+
 function signalSeverityScore(severity: IntelligenceSignal["severity"]): number {
   if (severity === "high") return 3;
   if (severity === "medium") return 2;
@@ -298,6 +305,7 @@ export async function collectProjectIntelligence(
     severity: "low" | "medium" | "high";
     pattern: string;
     globs: string[];
+    redactSamples?: boolean;
   }> = [
     {
       key: "todo_fixme",
@@ -325,7 +333,8 @@ export async function collectProjectIntelligence(
       label: "Potential hardcoded secret",
       severity: "high",
       pattern: "sk-[A-Za-z0-9_-]{20,}|api[_-]?key|secret[_-]?key|token\\s*[:=]",
-      globs: ["*.ts", "*.tsx", "*.js", "*.jsx", "*.py", "*.env*", "*.json", "*.md"],
+      globs: ["*.ts", "*.tsx", "*.js", "*.jsx", "*.py", "*.json", "*.yml", "*.yaml"],
+      redactSamples: true,
     },
   ];
 
@@ -337,7 +346,7 @@ export async function collectProjectIntelligence(
       label: def.label,
       severity: def.severity,
       count: matches.length,
-      samples: matches.slice(0, 8),
+      samples: (def.redactSamples ? matches.map(redactSignalSample) : matches).slice(0, 8),
     });
   }
   signals.sort((a, b) => {

@@ -1,21 +1,35 @@
 @import "tailwindcss";
 
 :root {
-  --background: #ffffff;
-  --foreground: #171717;
+  --background: #f6f3ee;
+  --foreground: #1d1c1a;
+  --surface: #ffffff;
+  --surface-muted: #f2efe9;
+  --surface-strong: #e9e4dc;
+  --border: #e2ddd4;
+  --accent: #0f766e;
+  --accent-strong: #0a5a54;
+  --accent-soft: #e0f2f1;
 }
 
 @theme inline {
   --color-background: var(--background);
   --color-foreground: var(--foreground);
-  --font-sans: var(--font-geist-sans);
-  --font-mono: var(--font-geist-mono);
+  --font-sans: var(--font-space-grotesk);
+  --font-mono: var(--font-plex-mono);
 }
 
 @media (prefers-color-scheme: dark) {
   :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
+    --background: #0d0f12;
+    --foreground: #eef0f3;
+    --surface: #14181d;
+    --surface-muted: #101418;
+    --surface-strong: #1c2228;
+    --border: #2a3038;
+    --accent: #5eead4;
+    --accent-strong: #2dd4bf;
+    --accent-soft: #123536;
   }
 }
 
@@ -38,8 +52,14 @@
 }
 
 body {
-  background: var(--background);
+  background: radial-gradient(1200px 600px at 10% -10%, #fff7e6 0%, var(--background) 55%, #edf1f4 100%);
   color: var(--foreground);
   font-family: var(--font-sans), system-ui, -apple-system, sans-serif;
   overflow: hidden;
+}
+
+@media (prefers-color-scheme: dark) {
+  body {
+    background: radial-gradient(900px 500px at 10% -10%, #1e2a2f 0%, var(--background) 55%, #0b0f12 100%);
+  }
 }
