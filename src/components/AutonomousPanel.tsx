@@ -1692,45 +1692,47 @@ export default function AutonomousPanel({
     : running
       ? "running"
       : "idle";
+  const showPanelHeader = !embedded;
 
   const cardClass =
-    "rounded-2xl border border-black/10 dark:border-white/10 bg-white/80 dark:bg-neutral-950/70 backdrop-blur-sm shadow-[0_12px_30px_rgba(15,23,42,0.08)]";
+    "rounded-2xl border border-white/10 bg-neutral-900/95 shadow-[0_14px_40px_rgba(2,8,20,0.55)]";
   const cardHeaderClass =
-    "px-4 py-3 border-b border-black/10 dark:border-white/10 text-sm font-semibold";
+    "px-4 py-3 border-b border-white/10 text-sm font-semibold text-neutral-100";
   const cardBodyClass = "p-4";
   const summaryClass =
-    "cursor-pointer text-sm font-semibold text-neutral-700 dark:text-neutral-200";
+    "cursor-pointer text-sm font-semibold text-neutral-100";
 
   const panel = (
     <section
       className={
         embedded
-          ? "h-dvh w-full flex flex-col"
-          : "fixed inset-y-0 right-0 z-50 w-full max-w-5xl border-l border-black/10 dark:border-white/10 bg-white/80 dark:bg-neutral-950/80 shadow-2xl flex flex-col"
+          ? "h-full min-h-0 w-full flex flex-col"
+          : "fixed inset-y-0 right-0 z-50 w-full max-w-5xl border-l border-white/10 bg-neutral-950 shadow-2xl flex flex-col"
       }
     >
-      <header className="border-b border-black/10 dark:border-white/10 bg-white/70 dark:bg-neutral-950/80 backdrop-blur">
+      {showPanelHeader && (
+      <header className="border-b border-white/10 bg-neutral-900/90 backdrop-blur">
         <div className="px-6 py-4 flex flex-wrap items-center justify-between gap-4">
           <div>
-            <p className="text-[11px] uppercase tracking-[0.3em] text-neutral-500">
+            <p className="text-[11px] uppercase tracking-[0.3em] text-neutral-400">
               Autonomous Agent
             </p>
-            <h2 className="text-lg font-semibold text-neutral-900 dark:text-neutral-100">
+            <h2 className="text-lg font-semibold text-neutral-100">
               {(botName || "Assistant").trim()} Run Console
             </h2>
-            <p className="text-xs text-neutral-500">
+            <p className="text-xs text-neutral-400">
               Live planning, code edits, quality gates, and completion tracking.
             </p>
           </div>
           <div className="flex items-center gap-3">
-            <div className="inline-flex rounded-full border border-black/10 dark:border-white/10 bg-white/80 dark:bg-neutral-900/70 p-1 text-xs">
+            <div className="inline-flex rounded-full border border-white/15 bg-neutral-800 p-1 text-xs">
               <button
                 type="button"
                 onClick={() => setExpertMode(false)}
                 className={`px-3 py-1 rounded-full transition-colors cursor-pointer ${
                   !expertMode
                     ? "bg-emerald-600 text-white"
-                    : "text-neutral-600 dark:text-neutral-300 hover:bg-black/5 dark:hover:bg-white/10"
+                    : "text-neutral-300 hover:bg-neutral-700"
                 }`}
                 aria-pressed={!expertMode}
               >
@@ -1742,7 +1744,7 @@ export default function AutonomousPanel({
                 className={`px-3 py-1 rounded-full transition-colors cursor-pointer ${
                   expertMode
                     ? "bg-emerald-600 text-white"
-                    : "text-neutral-600 dark:text-neutral-300 hover:bg-black/5 dark:hover:bg-white/10"
+                    : "text-neutral-300 hover:bg-neutral-700"
                 }`}
                 aria-pressed={expertMode}
               >
@@ -1757,7 +1759,7 @@ export default function AutonomousPanel({
             {!embedded && onClose && (
               <button
                 onClick={onClose}
-                className="p-2 rounded-lg hover:bg-black/5 dark:hover:bg-white/10 transition-colors cursor-pointer"
+                className="p-2 rounded-lg hover:bg-neutral-800 transition-colors cursor-pointer"
                 title="Close"
               >
                 <svg
@@ -1778,18 +1780,54 @@ export default function AutonomousPanel({
           </div>
         </div>
       </header>
+      )}
 
       <div className="flex-1 min-h-0 overflow-y-auto">
-        <div className="mx-auto max-w-6xl px-6 py-6 space-y-6">
+        <div className="mx-auto max-w-5xl px-6 py-6 space-y-6">
+          {embedded && (
+            <div className="flex items-center justify-end gap-3">
+              <div className="inline-flex rounded-full border border-white/15 bg-neutral-800 p-1 text-xs">
+                <button
+                  type="button"
+                  onClick={() => setExpertMode(false)}
+                  className={`px-3 py-1 rounded-full transition-colors cursor-pointer ${
+                    !expertMode
+                      ? "bg-emerald-600 text-white"
+                      : "text-neutral-300 hover:bg-neutral-700"
+                  }`}
+                  aria-pressed={!expertMode}
+                >
+                  Simple
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setExpertMode(true)}
+                  className={`px-3 py-1 rounded-full transition-colors cursor-pointer ${
+                    expertMode
+                      ? "bg-emerald-600 text-white"
+                      : "text-neutral-300 hover:bg-neutral-700"
+                  }`}
+                  aria-pressed={expertMode}
+                >
+                  Expert
+                </button>
+              </div>
+              <span
+                className={`inline-flex items-center px-2.5 py-1 rounded-full text-xs font-medium ${currentStatusBadge}`}
+              >
+                {runStatusLabel}
+              </span>
+            </div>
+          )}
           <section className={cardClass}>
             <div className={cardHeaderClass}>Goal</div>
             <div className={`${cardBodyClass} space-y-4`}>
               <div className="flex flex-wrap items-center justify-between gap-3">
-                <p className="text-[11px] text-neutral-500 font-mono">
+                <p className="text-[11px] text-neutral-400 font-mono">
                   Workspace: {workspacePath?.trim() || "(default workspace)"}
                 </p>
                 {settings.dryRun && (
-                  <span className="px-2 py-1 rounded-full bg-amber-100 text-amber-700 text-[11px] font-medium">
+                  <span className="px-2 py-1 rounded-full bg-amber-500/20 text-amber-300 text-[11px] font-medium">
                     Dry run enabled
                   </span>
                 )}
@@ -1798,12 +1836,12 @@ export default function AutonomousPanel({
                 value={goal}
                 onChange={(event) => setGoal(event.target.value)}
                 placeholder="Example: Implement JWT auth, migrate DB schema, add tests, run lint/typecheck/build, and resolve all failures."
-                className="w-full min-h-[120px] max-h-64 resize-y rounded-2xl border border-black/10 dark:border-white/10 bg-white/80 dark:bg-neutral-900 px-4 py-3 text-sm focus:outline-none focus:ring-2 focus:ring-emerald-300"
+                className="w-full min-h-[120px] max-h-64 resize-y rounded-2xl border border-white/15 bg-neutral-800 px-4 py-3 text-sm text-neutral-100 focus:outline-none focus:ring-2 focus:ring-emerald-400"
                 disabled={running}
               />
 
               <div className="flex flex-wrap items-center gap-3">
-                <label className="flex items-center gap-2 text-xs text-neutral-500">
+                <label className="flex items-center gap-2 text-xs text-neutral-400">
                   <span>Execution mode</span>
                   <select
                     value={settings.executionMode}
@@ -1813,14 +1851,14 @@ export default function AutonomousPanel({
                         event.target.value === "single" ? "single" : "multi"
                       )
                     }
-                    className="rounded-xl border border-black/10 dark:border-white/10 bg-white/80 dark:bg-neutral-900 px-2 py-1 text-sm"
+                    className="rounded-xl border border-white/15 bg-neutral-800 px-2 py-1 text-sm text-neutral-100"
                     disabled={running}
                   >
                     <option value="multi">Multi-agent async</option>
                     <option value="single">Single-agent (legacy)</option>
                   </select>
                 </label>
-                <label className="flex items-center gap-2 text-xs text-neutral-500">
+                <label className="flex items-center gap-2 text-xs text-neutral-400">
                   <span>Max iterations</span>
                   <input
                     type="number"
@@ -1832,7 +1870,7 @@ export default function AutonomousPanel({
                       if (!Number.isFinite(value)) return;
                       updateSettings("maxIterations", clamp(value, 2, 40));
                     }}
-                    className="w-20 rounded-xl border border-black/10 dark:border-white/10 bg-white/80 dark:bg-neutral-900 px-2 py-1 text-sm"
+                    className="w-20 rounded-xl border border-white/15 bg-neutral-800 px-2 py-1 text-sm text-neutral-100"
                     disabled={running}
                   />
                 </label>
@@ -1840,7 +1878,7 @@ export default function AutonomousPanel({
                 <button
                   onClick={applyCodingDefaults}
                   disabled={running}
-                  className="text-xs px-3 py-2 rounded-xl border border-emerald-200 text-emerald-700 hover:bg-emerald-50 transition-colors cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
+                  className="text-xs px-3 py-2 rounded-xl border border-emerald-500/40 text-emerald-300 hover:bg-emerald-500/15 transition-colors cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
                   type="button"
                 >
                   Coding Defaults

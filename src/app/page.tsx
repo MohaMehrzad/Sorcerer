@@ -224,24 +224,24 @@ export default function Home() {
   }
 
   return (
-    <div className="flex min-h-dvh flex-col">
-      <header className="border-b border-black/10 bg-white/70 backdrop-blur">
-        <div className="px-6 py-4 flex flex-wrap items-center justify-between gap-4">
+    <div className="flex min-h-dvh flex-col bg-neutral-950 text-neutral-100">
+      <header className="border-b border-white/10 bg-neutral-900/95 backdrop-blur">
+        <div className="px-6 py-4 flex flex-wrap items-start justify-between gap-4">
           <div>
-            <p className="text-[11px] uppercase tracking-[0.3em] text-neutral-500">
+            <p className="text-[11px] uppercase tracking-[0.3em] text-neutral-400">
               Sorcerer
             </p>
-            <h1 className="text-lg font-semibold text-neutral-900 dark:text-neutral-100">
+            <h1 className="text-xl font-semibold text-neutral-100">
               Autonomous Coding Studio
             </h1>
-            <p className="text-xs text-neutral-500">
+            <p className="text-sm text-neutral-400">
               Configure a workspace, set a goal, and let the agent run.
             </p>
           </div>
 
-          <div className="flex flex-wrap items-center gap-3">
-            <div className="min-w-[240px]">
-              <div className="text-[11px] font-semibold uppercase tracking-wider text-neutral-500">
+          <div className="flex flex-wrap items-end gap-3">
+            <div className="min-w-[260px]">
+              <div className="text-[11px] font-semibold uppercase tracking-wider text-neutral-400">
                 Workspace
               </div>
               <div className="mt-1 flex items-center gap-2">
@@ -249,7 +249,7 @@ export default function Home() {
                   value={activeWorkspaceId || ""}
                   onChange={(event) => handleSelectWorkspace(event.target.value)}
                   disabled={workspaces.length === 0}
-                  className="min-w-[200px] rounded-xl border border-black/10 bg-white/80 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-emerald-300"
+                  className="min-w-[200px] rounded-xl border border-white/15 bg-neutral-800 px-3 py-2 text-sm text-neutral-100 focus:outline-none focus:ring-2 focus:ring-emerald-400"
                 >
                   <option value="" disabled>
                     {workspaces.length === 0 ? "No workspaces yet" : "Select workspace"}
@@ -269,20 +269,20 @@ export default function Home() {
                 </button>
                 <button
                   onClick={() => openOnboarding(botProfile)}
-                  className="px-3 py-2 rounded-xl border border-black/10 bg-white/80 text-sm hover:bg-white transition-colors cursor-pointer"
+                  className="px-3 py-2 rounded-xl border border-white/15 bg-neutral-800 text-sm hover:bg-neutral-700 transition-colors cursor-pointer"
                 >
                   Setup
                 </button>
                 <button
                   onClick={() => activeWorkspaceId && handleDeleteWorkspace(activeWorkspaceId)}
                   disabled={!activeWorkspaceId}
-                  className="px-3 py-2 rounded-xl border border-red-200 text-red-600 text-sm hover:bg-red-50 disabled:opacity-50 disabled:cursor-not-allowed transition-colors cursor-pointer"
+                  className="px-3 py-2 rounded-xl border border-red-500/50 text-red-300 text-sm hover:bg-red-900/30 disabled:opacity-50 disabled:cursor-not-allowed transition-colors cursor-pointer"
                 >
                   Remove
                 </button>
               </div>
               <div
-                className="mt-1 text-[11px] text-neutral-500 font-mono truncate"
+                className="mt-1 text-[11px] text-neutral-400 font-mono truncate"
                 title={activeWorkspacePath}
               >
                 {activeWorkspacePath}
@@ -290,14 +290,14 @@ export default function Home() {
             </div>
 
             <div className="flex flex-col gap-1">
-              <span className="text-[11px] uppercase tracking-wider text-neutral-500">
+              <span className="text-[11px] uppercase tracking-wider text-neutral-400">
                 Active Bot
               </span>
               <div className="flex items-center gap-2">
-                <span className="px-2.5 py-1 rounded-full bg-emerald-100 text-emerald-700 text-xs font-medium">
+                <span className="px-2.5 py-1 rounded-full bg-emerald-500/20 text-emerald-300 text-xs font-medium">
                   {botProfile?.botName || "Assistant"}
                 </span>
-                <span className="px-2.5 py-1 rounded-full bg-black/5 text-xs font-mono text-neutral-600">
+                <span className="px-2.5 py-1 rounded-full bg-neutral-800 text-xs font-mono text-neutral-300">
                   {botProfile?.model || "Not configured"}
                 </span>
               </div>
@@ -307,14 +307,14 @@ export default function Home() {
 
         {workspacePickerError && (
           <div className="px-6 pb-4">
-            <div className="rounded-xl border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-700">
+            <div className="rounded-xl border border-red-500/40 bg-red-900/20 px-3 py-2 text-xs text-red-300">
               {workspacePickerError}
             </div>
           </div>
         )}
       </header>
 
-      <main className="flex-1 min-h-0">
+      <main className="flex-1 min-h-0 overflow-hidden">
         <AutonomousPanel
           embedded
           botName={botProfile?.botName || "Assistant"}

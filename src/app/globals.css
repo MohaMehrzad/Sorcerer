@@ -52,7 +52,7 @@
 }
 
 body {
-  background: radial-gradient(1200px 600px at 10% -10%, #fff7e6 0%, var(--background) 55%, #edf1f4 100%);
+  background: linear-gradient(180deg, #f8fbff 0%, #eef3f9 100%);
   color: var(--foreground);
   font-family: var(--font-sans), system-ui, -apple-system, sans-serif;
   overflow: hidden;
@@ -60,6 +60,6 @@ body {
 
 @media (prefers-color-scheme: dark) {
   body {
-    background: radial-gradient(900px 500px at 10% -10%, #1e2a2f 0%, var(--background) 55%, #0b0f12 100%);
+    background: linear-gradient(180deg, #0b1119 0%, #070c13 100%);
   }
 }
