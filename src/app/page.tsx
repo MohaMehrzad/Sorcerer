@@ -190,6 +190,16 @@ export default function Home() {
   }
 
   function handleDeleteWorkspace(id: string) {
+    const target = workspaces.find((workspace) => workspace.id === id) || null;
+    if (!target) return;
+
+    if (typeof window !== "undefined") {
+      const confirmed = window.confirm(
+        `Remove workspace "${target.name}"?\n\nThis removes it from Sorcerer workspace history only.`
+      );
+      if (!confirmed) return;
+    }
+
     const next = workspaces.filter((workspace) => workspace.id !== id);
     setWorkspaces(next);
 
@@ -226,9 +236,9 @@ export default function Home() {
   return (
     <div className="flex min-h-dvh flex-col bg-neutral-950 text-neutral-100">
       <header className="border-b border-white/10 bg-neutral-900/95 backdrop-blur">
-        <div className="px-6 py-4 flex flex-wrap items-start justify-between gap-4">
+        <div className="px-4 sm:px-6 py-4 flex flex-wrap items-start justify-between gap-4">
           <div>
-            <p className="text-[11px] uppercase tracking-[0.3em] text-neutral-400">
+            <p className="text-xs uppercase tracking-[0.3em] text-neutral-400">
               Sorcerer
             </p>
             <h1 className="text-xl font-semibold text-neutral-100">
@@ -240,16 +250,16 @@ export default function Home() {
           </div>
 
           <div className="flex flex-wrap items-end gap-3">
-            <div className="min-w-[260px]">
-              <div className="text-[11px] font-semibold uppercase tracking-wider text-neutral-400">
+            <div className="w-full sm:w-auto sm:min-w-[260px]">
+              <div className="text-xs font-semibold uppercase tracking-wider text-neutral-400">
                 Workspace
               </div>
-              <div className="mt-1 flex items-center gap-2">
+              <div className="mt-1 flex flex-wrap items-center gap-2">
                 <select
                   value={activeWorkspaceId || ""}
                   onChange={(event) => handleSelectWorkspace(event.target.value)}
                   disabled={workspaces.length === 0}
-                  className="min-w-[200px] rounded-xl border border-white/15 bg-neutral-800 px-3 py-2 text-sm text-neutral-100 focus:outline-none focus:ring-2 focus:ring-emerald-400"
+                  className="w-full sm:w-auto sm:min-w-[200px] rounded-xl border border-white/15 bg-neutral-800 px-3 py-2 text-sm text-neutral-100 focus:outline-none focus:ring-2 focus:ring-emerald-400"
                 >
                   <option value="" disabled>
                     {workspaces.length === 0 ? "No workspaces yet" : "Select workspace"}
@@ -282,15 +292,15 @@ export default function Home() {
                 </button>
               </div>
               <div
-                className="mt-1 text-[11px] text-neutral-400 font-mono truncate"
+                className="mt-1 text-xs text-neutral-400 font-mono truncate"
                 title={activeWorkspacePath}
               >
                 {activeWorkspacePath}
               </div>
             </div>
 
-            <div className="flex flex-col gap-1">
-              <span className="text-[11px] uppercase tracking-wider text-neutral-400">
+            <div className="w-full sm:w-auto flex flex-col gap-1">
+              <span className="text-xs uppercase tracking-wider text-neutral-400">
                 Active Bot
               </span>
               <div className="flex items-center gap-2">

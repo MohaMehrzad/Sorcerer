@@ -77,7 +77,7 @@ Notes:
 
 ## Workspaces
 
-- Left sidebar lists local workspaces.
+- Header workspace picker lists local workspaces.
 - `New Workspace` opens native picker (macOS/Windows) to select folder/file.
 - Agent always runs against currently selected workspace path.
 - Workspaces outside `WORKSPACE_DIR` must be approved first (picker auto-approves) or included in `WORKSPACE_ALLOWED_ROOTS`.
@@ -98,7 +98,7 @@ Start a run from the main panel by entering a goal and pressing `Start Autonomou
 
 Main controls:
 - Execution mode (`multi-agent async` or `single-agent legacy`)
-- Max iterations
+- Max iterations (`0` = unbounded autonomous loop)
 - Max parallel work units (multi-agent mode)
 - Critic pass threshold (multi-agent mode)
 - Team size (1-100)

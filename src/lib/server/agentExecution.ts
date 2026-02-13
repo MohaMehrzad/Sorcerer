@@ -36,7 +36,10 @@ function shouldFallbackToSingle(
 }
 
 function buildSingleFallbackRequest(request: AgentRunRequest): AgentRunRequest {
-  const fallbackIterations = Math.max(6, Math.min(request.maxIterations, 24));
+  const fallbackIterations =
+    request.maxIterations === 0
+      ? 0
+      : Math.max(6, Math.min(request.maxIterations, 24));
   return {
     ...request,
     executionMode: "single",

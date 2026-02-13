@@ -712,6 +712,17 @@ function clampFloat(value: number, min: number, max: number): number {
   return Math.max(min, Math.min(max, value));
 }
 
+function isUnboundedIterationMode(maxIterations: number): boolean {
+  return maxIterations === 0;
+}
+
+function hasIterationBudgetRemaining(
+  iterationCounter: number,
+  maxIterations: number
+): boolean {
+  return isUnboundedIterationMode(maxIterations) || iterationCounter < maxIterations;
+}
+
 function truncate(text: string, maxChars: number): string {
   if (text.length <= maxChars) return text;
   return `${text.slice(0, maxChars)}\n... (truncated ${text.length - maxChars} chars)`;
@@ -2802,7 +2813,9 @@ function buildCompletionResult(params: {
     (max, step) => Math.max(max, step.iteration),
     0
   );
-  const iterationsUsed = Math.min(params.maxIterations, highestIteration);
+  const iterationsUsed = isUnboundedIterationMode(params.maxIterations)
+    ? highestIteration
+    : Math.min(params.maxIterations, highestIteration);
   return {
     status: params.status,
     runId: params.runId,
@@ -3834,7 +3847,7 @@ export async function runMultiAgentAutonomous(
 
   while (true) {
     throwIfAborted(hooks?.signal);
-    if (iterationCounter >= request.maxIterations) {
+    if (!hasIterationBudgetRemaining(iterationCounter, request.maxIterations)) {
       reachedIterationLimit = true;
       break;
     }
@@ -3886,7 +3899,7 @@ export async function runMultiAgentAutonomous(
           attempt <= DEFAULT_UNIT_MAX_ATTEMPTS && !succeeded;
           attempt += 1
         ) {
-          if (iterationCounter >= request.maxIterations) {
+          if (!hasIterationBudgetRemaining(iterationCounter, request.maxIterations)) {
             reachedIterationLimit = true;
             state.status = "failed";
             state.lastError = "Iteration budget exhausted";

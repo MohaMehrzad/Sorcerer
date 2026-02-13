@@ -1,6 +1,6 @@
 "use client";
 
-import { FormEvent, useCallback, useEffect, useState } from "react";
+import { FormEvent, useCallback, useEffect, useRef, useState } from "react";
 import type { BotProfile } from "@/lib/store";
 import { apiFetch } from "@/lib/client/apiFetch";
 
@@ -53,6 +53,14 @@ export default function BotOnboarding({
   const [skillActionSuccess, setSkillActionSuccess] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [initialSkillsLoaded, setInitialSkillsLoaded] = useState(false);
+  const [workspacePickerBusy, setWorkspacePickerBusy] = useState(false);
+  const [workspacePickerError, setWorkspacePickerError] = useState<string | null>(null);
+  const [testingConnection, setTestingConnection] = useState(false);
+  const [connectionSuccess, setConnectionSuccess] = useState<string | null>(null);
+  const [connectionError, setConnectionError] = useState<string | null>(null);
+
+  const firstInputRef = useRef<HTMLInputElement | null>(null);
+  const lastFocusedRef = useRef<HTMLElement | null>(null);
 
   const loadSkills = useCallback(async (targetWorkspace: string) => {
     const normalizedWorkspace = targetWorkspace.trim();
@@ -152,6 +160,103 @@ export default function BotOnboarding({
     }
   }
 
+  async function handlePickWorkspace() {
+    setWorkspacePickerBusy(true);
+    setWorkspacePickerError(null);
+    setSkillActionSuccess(null);
+    setConnectionSuccess(null);
+    setConnectionError(null);
+
+    try {
+      const response = await apiFetch("/api/workspace/pick", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+      });
+
+      const data = (await response.json().catch(() => ({}))) as {
+        error?: string;
+        canceled?: boolean;
+        workspacePath?: string;
+      };
+
+      if (!response.ok) {
+        throw new Error(data.error || `Workspace picker failed (${response.status})`);
+      }
+
+      if (data.canceled) {
+        return;
+      }
+
+      const pickedPath = typeof data.workspacePath === "string" ? data.workspacePath.trim() : "";
+      if (!pickedPath) {
+        throw new Error("Workspace picker returned an empty path.");
+      }
+
+      setWorkspacePath(pickedPath);
+      await loadSkills(pickedPath);
+    } catch (err) {
+      setWorkspacePickerError(
+        err instanceof Error ? err.message : "Failed to open workspace picker."
+      );
+    } finally {
+      setWorkspacePickerBusy(false);
+    }
+  }
+
+  async function handleTestConnection() {
+    const nextApiKey = apiKey.trim();
+    const nextApiUrl = apiUrl.trim();
+    const nextModel = model.trim();
+    if (!nextApiKey || !nextApiUrl || !nextModel) {
+      setConnectionSuccess(null);
+      setConnectionError("Model API key, URL, and model are required to test.");
+      return;
+    }
+
+    setTestingConnection(true);
+    setConnectionSuccess(null);
+    setConnectionError(null);
+
+    const controller = new AbortController();
+    const timeout = window.setTimeout(() => controller.abort(), 20000);
+    try {
+      const response = await apiFetch("/api/chat", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          messages: [{ role: "user", content: "Reply with OK." }],
+          botName: botName.trim() || "Assistant",
+          botContext: botContext.trim(),
+          modelConfig: {
+            apiUrl: nextApiUrl,
+            apiKey: nextApiKey,
+            model: nextModel,
+          },
+        }),
+        signal: controller.signal,
+      });
+
+      if (!response.ok) {
+        const data = (await response.json().catch(() => ({}))) as { error?: string };
+        throw new Error(data.error || `Connection test failed (${response.status})`);
+      }
+
+      await response.body?.cancel();
+      setConnectionSuccess("Connection successful.");
+    } catch (err) {
+      if (err instanceof DOMException && err.name === "AbortError") {
+        setConnectionError("Connection test timed out after 20 seconds.");
+      } else {
+        setConnectionError(
+          err instanceof Error ? err.message : "Connection test failed."
+        );
+      }
+    } finally {
+      window.clearTimeout(timeout);
+      setTestingConnection(false);
+    }
+  }
+
   function toggleSkill(skillId: string) {
     setEnabledSkillFiles((previous) =>
       previous.includes(skillId)
@@ -168,6 +273,29 @@ export default function BotOnboarding({
     setInitialSkillsLoaded(true);
     void loadSkills(workspacePath);
   }, [initialSkillsLoaded, loadSkills, open, workspacePath]);
+
+  useEffect(() => {
+    if (!open) return;
+
+    lastFocusedRef.current =
+      document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    const timer = window.setTimeout(() => {
+      firstInputRef.current?.focus();
+    }, 0);
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape" && canClose) {
+        event.preventDefault();
+        onClose();
+      }
+    };
+    window.addEventListener("keydown", onKeyDown);
+
+    return () => {
+      window.clearTimeout(timer);
+      window.removeEventListener("keydown", onKeyDown);
+      lastFocusedRef.current?.focus();
+    };
+  }, [canClose, onClose, open]);
 
   function handleSubmit(event: FormEvent) {
     event.preventDefault();
@@ -205,14 +333,22 @@ export default function BotOnboarding({
 
   return (
     <>
-      <div className="fixed inset-0 z-[70] bg-black/50" />
-      <section className="fixed inset-0 z-[71] overflow-y-auto p-4">
+      <div className="fixed inset-0 z-[70] bg-black/50" aria-hidden="true" />
+      <section
+        className="fixed inset-0 z-[71] overflow-y-auto p-4"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="bot-setup-title"
+        aria-describedby="bot-setup-description"
+      >
         <div className="min-h-full flex items-start justify-center py-4">
           <div className="w-full max-w-2xl max-h-[calc(100dvh-2rem)] flex flex-col rounded-2xl border border-black/10 dark:border-white/10 bg-white/90 dark:bg-neutral-950/90 backdrop-blur shadow-2xl">
             <div className="px-6 py-4 border-b border-black/10 dark:border-white/10 flex items-center justify-between">
               <div>
-                <h2 className="text-base font-semibold">Bot Setup</h2>
-                <p className="text-xs text-neutral-500 mt-1">
+                <h2 id="bot-setup-title" className="text-base font-semibold">
+                  Bot Setup
+                </h2>
+                <p id="bot-setup-description" className="text-sm text-neutral-500 mt-1">
                   Connect a model provider and choose the workspace to operate in.
                 </p>
               </div>
@@ -221,6 +357,7 @@ export default function BotOnboarding({
                   onClick={onClose}
                   className="p-2 rounded-lg hover:bg-black/5 dark:hover:bg-white/10 transition-colors cursor-pointer"
                   title="Close"
+                  aria-label="Close bot setup"
                 >
                   <svg
                     width="16"
@@ -242,20 +379,25 @@ export default function BotOnboarding({
             <form onSubmit={handleSubmit} className="p-6 space-y-5 overflow-y-auto">
               <div className="grid gap-4 md:grid-cols-2">
                 <label className="block text-sm">
-                  <span className="block text-[11px] font-semibold uppercase tracking-wider text-neutral-500 mb-1">
+                  <span className="block text-xs font-semibold uppercase tracking-wider text-neutral-500 mb-1">
                     Bot Name
                   </span>
                   <input
+                    ref={firstInputRef}
                     type="text"
                     value={botName}
-                    onChange={(event) => setBotName(event.target.value)}
+                    onChange={(event) => {
+                      setBotName(event.target.value);
+                      setConnectionSuccess(null);
+                      setConnectionError(null);
+                    }}
                     placeholder="e.g. Merlin, Athena, Forge"
                     className="w-full rounded-xl border border-black/10 dark:border-white/10 bg-white/80 dark:bg-neutral-900 px-3 py-2"
                   />
                 </label>
 
                 <label className="block text-sm">
-                  <span className="block text-[11px] font-semibold uppercase tracking-wider text-neutral-500 mb-1">
+                  <span className="block text-xs font-semibold uppercase tracking-wider text-neutral-500 mb-1">
                     Workspace Folder
                   </span>
                   <input
@@ -264,6 +406,7 @@ export default function BotOnboarding({
                     onChange={(event) => {
                       setWorkspacePath(event.target.value);
                       setSkillActionSuccess(null);
+                      setWorkspacePickerError(null);
                     }}
                     onBlur={(event) => {
                       loadSkills(event.target.value);
@@ -271,49 +414,104 @@ export default function BotOnboarding({
                     placeholder="/Users/you/Projects/my-repo or ."
                     className="w-full rounded-xl border border-black/10 dark:border-white/10 bg-white/80 dark:bg-neutral-900 px-3 py-2 font-mono"
                   />
+                  <span className="mt-2 flex items-center gap-2">
+                    <button
+                      type="button"
+                      onClick={handlePickWorkspace}
+                      disabled={workspacePickerBusy}
+                      className="px-2.5 py-1.5 rounded-lg border border-black/10 dark:border-white/10 text-xs hover:bg-black/5 dark:hover:bg-white/10 disabled:opacity-60 disabled:cursor-not-allowed transition-colors cursor-pointer"
+                    >
+                      {workspacePickerBusy ? "Opening..." : "Pick Workspace"}
+                    </button>
+                  </span>
+                  {workspacePickerError && (
+                    <span className="mt-1 block text-xs text-red-600 dark:text-red-400">
+                      {workspacePickerError}
+                    </span>
+                  )}
                 </label>
 
                 <label className="block text-sm md:col-span-2">
-                  <span className="block text-[11px] font-semibold uppercase tracking-wider text-neutral-500 mb-1">
+                  <span className="block text-xs font-semibold uppercase tracking-wider text-neutral-500 mb-1">
                     Model API Key
                   </span>
                   <input
                     type="password"
                     value={apiKey}
-                    onChange={(event) => setApiKey(event.target.value)}
+                    onChange={(event) => {
+                      setApiKey(event.target.value);
+                      setConnectionSuccess(null);
+                      setConnectionError(null);
+                    }}
                     placeholder="sk-..."
                     className="w-full rounded-xl border border-black/10 dark:border-white/10 bg-white/80 dark:bg-neutral-900 px-3 py-2 font-mono"
                   />
-                  <span className="mt-1 block text-[11px] text-neutral-500">
+                  <span className="mt-1 block text-xs text-neutral-500">
                     Stored only in browser session storage (clears on close).
                   </span>
                 </label>
 
                 <label className="block text-sm">
-                  <span className="block text-[11px] font-semibold uppercase tracking-wider text-neutral-500 mb-1">
+                  <span className="block text-xs font-semibold uppercase tracking-wider text-neutral-500 mb-1">
                     Model API URL
                   </span>
                   <input
                     type="text"
                     value={apiUrl}
-                    onChange={(event) => setApiUrl(event.target.value)}
+                    onChange={(event) => {
+                      setApiUrl(event.target.value);
+                      setConnectionSuccess(null);
+                      setConnectionError(null);
+                    }}
                     placeholder={DEFAULT_API_URL}
                     className="w-full rounded-xl border border-black/10 dark:border-white/10 bg-white/80 dark:bg-neutral-900 px-3 py-2 font-mono"
                   />
                 </label>
 
                 <label className="block text-sm">
-                  <span className="block text-[11px] font-semibold uppercase tracking-wider text-neutral-500 mb-1">
+                  <span className="block text-xs font-semibold uppercase tracking-wider text-neutral-500 mb-1">
                     Model Name
                   </span>
                   <input
                     type="text"
                     value={model}
-                    onChange={(event) => setModel(event.target.value)}
+                    onChange={(event) => {
+                      setModel(event.target.value);
+                      setConnectionSuccess(null);
+                      setConnectionError(null);
+                    }}
                     placeholder={DEFAULT_MODEL}
                     className="w-full rounded-xl border border-black/10 dark:border-white/10 bg-white/80 dark:bg-neutral-900 px-3 py-2 font-mono"
                   />
                 </label>
+
+                <div className="md:col-span-2">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <button
+                      type="button"
+                      onClick={handleTestConnection}
+                      disabled={
+                        testingConnection ||
+                        !apiKey.trim() ||
+                        !apiUrl.trim() ||
+                        !model.trim()
+                      }
+                      className="px-3 py-2 rounded-lg border border-black/10 dark:border-white/10 text-sm hover:bg-black/5 dark:hover:bg-white/10 disabled:opacity-60 disabled:cursor-not-allowed transition-colors cursor-pointer"
+                    >
+                      {testingConnection ? "Testing..." : "Test Connection"}
+                    </button>
+                    {connectionSuccess && (
+                      <span className="text-sm text-emerald-600 dark:text-emerald-400">
+                        {connectionSuccess}
+                      </span>
+                    )}
+                  </div>
+                  {connectionError && (
+                    <p className="mt-1 text-sm text-red-600 dark:text-red-400">
+                      {connectionError}
+                    </p>
+                  )}
+                </div>
               </div>
 
               <details className="rounded-2xl border border-black/10 dark:border-white/10 bg-white/70 dark:bg-neutral-950/70 p-4">
@@ -339,7 +537,7 @@ export default function BotOnboarding({
                   </div>
 
                   <label className="block text-sm">
-                    <span className="block text-[11px] font-semibold uppercase tracking-wider text-neutral-500 mb-1">
+                    <span className="block text-xs font-semibold uppercase tracking-wider text-neutral-500 mb-1">
                       Skill Prompt
                     </span>
                     <textarea
@@ -396,10 +594,10 @@ export default function BotOnboarding({
                             <span className="block text-xs font-medium truncate">
                               {skill.name}
                             </span>
-                            <span className="block text-[11px] text-neutral-500 font-mono truncate">
+                            <span className="block text-xs text-neutral-500 font-mono truncate">
                               {skill.relativePath}
                             </span>
-                            <span className="block text-[11px] text-neutral-500 mt-1 line-clamp-2 whitespace-pre-wrap">
+                            <span className="block text-xs text-neutral-500 mt-1 line-clamp-2 whitespace-pre-wrap">
                               {skill.preview}
                             </span>
                           </span>

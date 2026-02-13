@@ -55,11 +55,23 @@ body {
   background: linear-gradient(180deg, #f8fbff 0%, #eef3f9 100%);
   color: var(--foreground);
   font-family: var(--font-sans), system-ui, -apple-system, sans-serif;
-  overflow: hidden;
+  overflow-x: hidden;
+  overflow-y: auto;
 }
 
 @media (prefers-color-scheme: dark) {
   body {
     background: linear-gradient(180deg, #0b1119 0%, #070c13 100%);
   }
+}
+
+.autonomous-panel .text-xs {
+  font-size: 0.8125rem;
+  line-height: 1.35;
+}
+
+.autonomous-panel [class*="text-[10px]"],
+.autonomous-panel [class*="text-[11px]"] {
+  font-size: 0.8125rem;
+  line-height: 1.35;
 }

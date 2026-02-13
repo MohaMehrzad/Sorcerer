@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import { apiFetch } from "@/lib/client/apiFetch";
 
 interface TreeNode {
@@ -117,28 +117,60 @@ export default function FileExplorer({
 }: FileExplorerProps) {
   const [tree, setTree] = useState<TreeNode[]>([]);
   const [loading, setLoading] = useState(false);
+  const [treeError, setTreeError] = useState<string | null>(null);
   const [preview, setPreview] = useState<{
     path: string;
     content: string;
   } | null>(null);
   const [previewLoading, setPreviewLoading] = useState(false);
+  const dialogRef = useRef<HTMLDivElement | null>(null);
+  const lastFocusedRef = useRef<HTMLElement | null>(null);
 
   const loadTree = useCallback(async () => {
     setLoading(true);
+    setTreeError(null);
     try {
       const res = await apiFetch("/api/files", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ action: "tree", workspacePath }),
       });
-      const data = await res.json();
-      setTree(data.tree || []);
-    } catch {
-      // silently fail
+      const data = (await res.json().catch(() => ({}))) as {
+        error?: string;
+        tree?: TreeNode[];
+      };
+      if (!res.ok) {
+        throw new Error(data.error || `Failed to load file tree (${res.status})`);
+      }
+      setTree(Array.isArray(data.tree) ? data.tree : []);
+    } catch (err) {
+      setTree([]);
+      setTreeError(err instanceof Error ? err.message : "Failed to load file tree");
     } finally {
       setLoading(false);
     }
   }, [workspacePath]);
+
+  useEffect(() => {
+    if (!open) return;
+    lastFocusedRef.current =
+      document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    const timer = window.setTimeout(() => {
+      dialogRef.current?.focus();
+    }, 0);
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        event.preventDefault();
+        onClose();
+      }
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => {
+      window.clearTimeout(timer);
+      window.removeEventListener("keydown", onKeyDown);
+      lastFocusedRef.current?.focus();
+    };
+  }, [onClose, open]);
 
   useEffect(() => {
     if (open) loadTree();
@@ -172,13 +204,23 @@ export default function FileExplorer({
       <div
         className="fixed inset-0 bg-black/40 z-40"
         onClick={onClose}
+        aria-hidden="true"
       />
-      <div className="fixed inset-y-0 right-0 w-full max-w-2xl bg-white dark:bg-neutral-900 border-l border-neutral-200 dark:border-neutral-800 z-50 flex flex-col shadow-2xl">
+      <div
+        ref={dialogRef}
+        className="fixed inset-y-0 right-0 w-full max-w-2xl bg-white dark:bg-neutral-900 border-l border-neutral-200 dark:border-neutral-800 z-50 flex flex-col shadow-2xl"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="file-explorer-title"
+        tabIndex={-1}
+      >
         {/* Header */}
         <div className="flex items-center justify-between px-4 py-3 border-b border-neutral-200 dark:border-neutral-800">
           <div>
-            <h2 className="text-sm font-semibold">File Explorer</h2>
-            <p className="text-[11px] text-neutral-500 mt-0.5 font-mono truncate max-w-[420px]">
+            <h2 id="file-explorer-title" className="text-sm font-semibold">
+              File Explorer
+            </h2>
+            <p className="text-xs text-neutral-500 mt-0.5 font-mono truncate max-w-[420px]">
               Workspace: {workspacePath?.trim() || "(default workspace)"}
             </p>
           </div>
@@ -196,6 +238,7 @@ export default function FileExplorer({
             <button
               onClick={onClose}
               className="text-xs px-2 py-1 rounded hover:bg-neutral-100 dark:hover:bg-neutral-800 text-neutral-500 cursor-pointer"
+              aria-label="Close file explorer"
             >
               <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                 <line x1="18" y1="6" x2="6" y2="18" />
@@ -211,6 +254,17 @@ export default function FileExplorer({
             {loading ? (
               <div className="px-4 py-8 text-xs text-neutral-400 text-center">
                 Loading...
+              </div>
+            ) : treeError ? (
+              <div className="px-4 py-8 text-xs text-center">
+                <p className="text-red-600 dark:text-red-400">{treeError}</p>
+                <button
+                  type="button"
+                  onClick={loadTree}
+                  className="mt-2 px-2.5 py-1.5 rounded border border-black/10 dark:border-white/10 hover:bg-black/5 dark:hover:bg-white/10 transition-colors cursor-pointer"
+                >
+                  Retry
+                </button>
               </div>
             ) : tree.length === 0 ? (
               <div className="px-4 py-8 text-xs text-neutral-400 text-center">

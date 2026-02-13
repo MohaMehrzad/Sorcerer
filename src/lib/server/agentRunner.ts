@@ -35,7 +35,8 @@ import {
 
 const execFileAsync = promisify(execFile);
 
-const DEFAULT_MAX_ITERATIONS = 18;
+const UNBOUNDED_MAX_ITERATIONS = 0;
+const DEFAULT_MAX_ITERATIONS = UNBOUNDED_MAX_ITERATIONS;
 const MAX_ITERATIONS_LIMIT = 40;
 const DEFAULT_MAX_FILE_WRITES = 24;
 const DEFAULT_MAX_COMMAND_RUNS = 36;
@@ -602,6 +603,32 @@ function clampNumber(
   return Math.max(min, Math.min(max, Math.floor(value)));
 }
 
+function isUnboundedIterationMode(maxIterations: number): boolean {
+  return maxIterations === UNBOUNDED_MAX_ITERATIONS;
+}
+
+function hasIterationBudgetRemaining(iteration: number, maxIterations: number): boolean {
+  return isUnboundedIterationMode(maxIterations) || iteration <= maxIterations;
+}
+
+function hasFollowupIteration(iteration: number, maxIterations: number): boolean {
+  return isUnboundedIterationMode(maxIterations) || iteration < maxIterations;
+}
+
+function formatIterationBudget(maxIterations: number): string {
+  return isUnboundedIterationMode(maxIterations) ? "unbounded" : String(maxIterations);
+}
+
+function normalizeCheckpointIteration(
+  iterationsUsed: number,
+  maxIterations: number
+): number {
+  if (isUnboundedIterationMode(maxIterations)) {
+    return Math.max(0, iterationsUsed);
+  }
+  return Math.min(maxIterations, Math.max(0, iterationsUsed));
+}
+
 function truncate(text: string, maxChars: number): string {
   if (text.length <= maxChars) return text;
   return `${text.slice(0, maxChars)}\n... (truncated ${text.length - maxChars} chars)`;
@@ -669,7 +696,7 @@ function buildOperationalMemorySummary(params: {
   const summary = [
     "Operational memory checkpoint:",
     `Goal: ${truncate(params.goal, 260)}`,
-    `Progress: iteration ${params.iteration}/${params.maxIterations}`,
+    `Progress: iteration ${params.iteration}/${formatIterationBudget(params.maxIterations)}`,
     `Compaction stats: droppedMessages=${params.compaction.droppedMessages}, lastCompactedIteration=${params.compaction.lastCompactedIteration}`,
     `Changed files (${changedFiles.length}): ${changedFiles.join(", ") || "(none)"}`,
     "",
@@ -2813,7 +2840,11 @@ function buildInitialMessage(
   return [
     `Time: ${new Date().toISOString()}`,
     `Workspace: ${workspace}`,
-    `Max iterations: ${request.maxIterations}`,
+    `Max iterations: ${
+      isUnboundedIterationMode(request.maxIterations)
+        ? "unbounded (0)"
+        : request.maxIterations
+    }`,
     `Budgets: maxFileWrites=${request.maxFileWrites}, maxCommandRuns=${request.maxCommandRuns}`,
     `Strict verification: ${request.strictVerification}`,
     `Auto-fix verification failures: ${request.autoFixVerification}`,
@@ -2957,7 +2988,9 @@ function findLastEvidenceIteration(steps: AgentStep[]): number {
 }
 
 function buildIterationPrompt(iteration: number, maxIterations: number): string {
-  return `Iteration ${iteration}/${maxIterations}. Return only one valid action JSON.`;
+  return `Iteration ${iteration}/${formatIterationBudget(
+    maxIterations
+  )}. Return only one valid action JSON.`;
 }
 
 function buildToolFeedback(result: ToolResult, context: ToolContext): string {
@@ -3239,7 +3272,9 @@ function finalizeResult(
     (max, step) => Math.max(max, step.iteration),
     0
   );
-  const iterationsUsed = Math.min(base.maxIterations, highestIteration);
+  const iterationsUsed = isUnboundedIterationMode(base.maxIterations)
+    ? highestIteration
+    : Math.min(base.maxIterations, highestIteration);
   const hasHighRiskSignals = params.projectIntelligence.signals.some(
     (signal) => signal.severity === "high" && signal.count > 0
   );
@@ -3682,7 +3717,7 @@ export async function runAutonomousAgent(
       toolContext.changeJournal.push(...(resumeCheckpoint.changeJournal || []));
       nextIteration = Math.max(
         1,
-        Math.min(request.maxIterations, (resumeCheckpoint.lastIteration || 0) + 1)
+        (resumeCheckpoint.lastIteration || 0) + 1
       );
 
       emit(hooks, {
@@ -3795,7 +3830,11 @@ export async function runAutonomousAgent(
       history
     );
 
-    for (let iteration = nextIteration; iteration <= request.maxIterations; iteration += 1) {
+    for (
+      let iteration = nextIteration;
+      hasIterationBudgetRemaining(iteration, request.maxIterations);
+      iteration += 1
+    ) {
       throwIfAborted(hooks?.signal);
 
       const iterationStarted = Date.now();
@@ -3838,7 +3877,7 @@ export async function runAutonomousAgent(
             summary: `History compacted at iteration ${iteration}.`,
             remainingWork,
             steps,
-            nextIterationHint: Math.min(request.maxIterations, iteration + 1),
+            nextIterationHint: iteration + 1,
           })
         ).catch(() => undefined);
       }
@@ -4053,7 +4092,10 @@ export async function runAutonomousAgent(
           steps.push(failedFinalStep);
           emit(hooks, { type: "step", data: { step: failedFinalStep } });
 
-          if (request.autoFixVerification && iteration < request.maxIterations) {
+          if (
+            request.autoFixVerification &&
+            hasFollowupIteration(iteration, request.maxIterations)
+          ) {
             history.push({
               role: "user",
               content: verificationOutcome.feedback,
@@ -4184,8 +4226,12 @@ export async function runAutonomousAgent(
     }
 
     if (!finalSummary) {
-      finalSummary =
-        "Iteration limit reached before the agent could safely declare completion. Review step logs and rerun with refined goals or higher budgets.";
+      finalSummary = isUnboundedIterationMode(request.maxIterations)
+        ? "Run ended before the agent could safely declare completion. Review step logs and continue from the latest checkpoint."
+        : "Iteration limit reached before the agent could safely declare completion. Review step logs and rerun with refined goals or higher budgets.";
+      if (isUnboundedIterationMode(request.maxIterations) && status === "max_iterations") {
+        status = "failed";
+      }
     }
 
     let rollbackApplied = false;
@@ -4223,7 +4269,7 @@ export async function runAutonomousAgent(
     });
     await safePersistCheckpoint(
       status,
-      Math.min(request.maxIterations, result.iterationsUsed),
+      normalizeCheckpointIteration(result.iterationsUsed, request.maxIterations),
       result.summary,
       result.verification,
       result.remainingWork,
@@ -4308,7 +4354,7 @@ export async function runAutonomousAgent(
     });
     await safePersistCheckpoint(
       failedResult.status,
-      Math.min(request.maxIterations, failedResult.iterationsUsed),
+      normalizeCheckpointIteration(failedResult.iterationsUsed, request.maxIterations),
       failedResult.summary,
       failedResult.verification,
       failedResult.remainingWork,
@@ -4453,12 +4499,16 @@ export function normalizeAgentRunRequest(body: unknown): {
       : undefined;
   const executionMode = data.executionMode === "single" ? "single" : "multi";
 
-  const maxIterations = clampNumber(
-    parseNumber(data.maxIterations),
-    DEFAULT_MAX_ITERATIONS,
-    2,
-    MAX_ITERATIONS_LIMIT
-  );
+  const requestedMaxIterations = parseNumber(data.maxIterations);
+  const maxIterations =
+    requestedMaxIterations === UNBOUNDED_MAX_ITERATIONS
+      ? UNBOUNDED_MAX_ITERATIONS
+      : clampNumber(
+          requestedMaxIterations,
+          DEFAULT_MAX_ITERATIONS,
+          2,
+          MAX_ITERATIONS_LIMIT
+        );
 
   const maxFileWrites = clampNumber(
     parseNumber(data.maxFileWrites),

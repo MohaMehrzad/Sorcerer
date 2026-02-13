@@ -349,7 +349,7 @@ const MAX_HISTORY_ITEMS = 12;
 
 const DEFAULT_SETTINGS: AgentSettings = {
   executionMode: "multi",
-  maxIterations: 24,
+  maxIterations: 0,
   maxParallelWorkUnits: 3,
   criticPassThreshold: 0.62,
   teamSize: 8,
@@ -434,7 +434,7 @@ function formatRunReport(result: AgentRunResult): string {
     `- Status: ${result.status}`,
     `- Execution mode: ${result.executionMode}`,
     `- Model: ${result.model}`,
-    `- Iterations: ${result.iterationsUsed}/${result.maxIterations}`,
+    `- Iterations: ${formatIterationProgress(result.iterationsUsed, result.maxIterations)}`,
     `- Team size: ${result.teamSize}`,
     `- File writes: ${result.fileWriteCount}`,
     `- Command runs: ${result.commandRunCount}`,
@@ -628,6 +628,23 @@ function clamp(value: number, min: number, max: number): number {
   return Math.max(min, Math.min(max, Math.floor(value)));
 }
 
+function normalizeMaxIterations(value: number): number {
+  if (!Number.isFinite(value)) {
+    return DEFAULT_SETTINGS.maxIterations;
+  }
+  const floored = Math.floor(value);
+  if (floored === 0) return 0;
+  return clamp(floored, 2, 40);
+}
+
+function formatIterationBudget(maxIterations: number): string {
+  return maxIterations === 0 ? "unbounded" : String(maxIterations);
+}
+
+function formatIterationProgress(iterationsUsed: number, maxIterations: number): string {
+  return `${iterationsUsed}/${formatIterationBudget(maxIterations)}`;
+}
+
 function looksLikeMutationGoal(goal: string): boolean {
   return /(?:create|write|implement|build|fix|refactor|add|generate|code|project|file|backend|frontend)/i.test(
     goal
@@ -642,7 +659,7 @@ function normalizeAgentSettings(input: Partial<AgentSettings> | null | undefined
 
   return {
     executionMode: merged.executionMode === "single" ? "single" : "multi",
-    maxIterations: clamp(Number(merged.maxIterations), 2, 40),
+    maxIterations: normalizeMaxIterations(Number(merged.maxIterations)),
     maxParallelWorkUnits: clamp(Number(merged.maxParallelWorkUnits), 1, 8),
     criticPassThreshold: Math.max(0.2, Math.min(0.95, Number(merged.criticPassThreshold))),
     teamSize: clamp(Number(merged.teamSize), 1, 100),
@@ -1099,6 +1116,8 @@ export default function AutonomousPanel({
 
   const controllerRef = useRef<AbortController | null>(null);
   const memoryImportInputRef = useRef<HTMLInputElement | null>(null);
+  const panelRef = useRef<HTMLElement | null>(null);
+  const lastFocusedRef = useRef<HTMLElement | null>(null);
   const agentStreamEndpoint = useMemo(() => resolveAgentStreamEndpoint(), []);
   const steps: AgentStep[] = result ? result.steps : liveSteps;
   const hasFailedStep = steps.some((step) => !step.ok);
@@ -1394,17 +1413,36 @@ export default function AutonomousPanel({
     }
   }
 
-  async function forgetMemory(entryId: string) {
+  async function forgetMemory(entry: LongTermMemoryEntry) {
     setMemoryError(null);
+    if (typeof window !== "undefined") {
+      const confirmed = window.confirm(
+        `Forget memory "${entry.title}"?\n\nThis permanently removes it from local memory storage.`
+      );
+      if (!confirmed) return;
+    }
     try {
       await callMemoryApi<{ removed: boolean }>({
         action: "forget",
-        memoryId: entryId,
+        memoryId: entry.id,
       });
-      setMemoryEntries((prev) => prev.filter((entry) => entry.id !== entryId));
+      setMemoryEntries((prev) =>
+        prev.filter((candidate) => candidate.id !== entry.id)
+      );
     } catch (err) {
       setMemoryError(err instanceof Error ? err.message : "Failed to remove memory");
     }
+  }
+
+  function clearHistory() {
+    if (typeof window !== "undefined") {
+      const confirmed = window.confirm(
+        "Clear all run history?\n\nThis only removes local history from this browser."
+      );
+      if (!confirmed) return;
+    }
+    setHistory([]);
+    setStatusMessage("Cleared local run history.");
   }
 
   async function exportMemoryJson() {
@@ -1453,6 +1491,29 @@ export default function AutonomousPanel({
     if (!open) return;
     void refreshMemoryList();
   }, [open, refreshMemoryList]);
+
+  useEffect(() => {
+    if (embedded || !open) return;
+
+    lastFocusedRef.current =
+      document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    const timer = window.setTimeout(() => {
+      panelRef.current?.focus();
+    }, 0);
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape" && onClose) {
+        event.preventDefault();
+        onClose();
+      }
+    };
+    window.addEventListener("keydown", onKeyDown);
+
+    return () => {
+      window.clearTimeout(timer);
+      window.removeEventListener("keydown", onKeyDown);
+      lastFocusedRef.current?.focus();
+    };
+  }, [embedded, onClose, open]);
 
   useEffect(() => {
     if (!result?.finishedAt) return;
@@ -1704,11 +1765,16 @@ export default function AutonomousPanel({
 
   const panel = (
     <section
+      ref={embedded ? undefined : panelRef}
       className={
         embedded
-          ? "h-full min-h-0 w-full flex flex-col"
-          : "fixed inset-y-0 right-0 z-50 w-full max-w-5xl border-l border-white/10 bg-neutral-950 shadow-2xl flex flex-col"
+          ? "autonomous-panel h-full min-h-0 w-full flex flex-col"
+          : "autonomous-panel fixed inset-y-0 right-0 z-50 w-full max-w-5xl border-l border-white/10 bg-neutral-950 shadow-2xl flex flex-col"
       }
+      role={embedded ? undefined : "dialog"}
+      aria-modal={embedded ? undefined : true}
+      aria-labelledby={embedded ? undefined : "autonomous-panel-title"}
+      tabIndex={embedded ? undefined : -1}
     >
       {showPanelHeader && (
       <header className="border-b border-white/10 bg-neutral-900/90 backdrop-blur">
@@ -1717,7 +1783,7 @@ export default function AutonomousPanel({
             <p className="text-[11px] uppercase tracking-[0.3em] text-neutral-400">
               Autonomous Agent
             </p>
-            <h2 className="text-lg font-semibold text-neutral-100">
+            <h2 id="autonomous-panel-title" className="text-lg font-semibold text-neutral-100">
               {(botName || "Assistant").trim()} Run Console
             </h2>
             <p className="text-xs text-neutral-400">
@@ -1761,6 +1827,7 @@ export default function AutonomousPanel({
                 onClick={onClose}
                 className="p-2 rounded-lg hover:bg-neutral-800 transition-colors cursor-pointer"
                 title="Close"
+                aria-label="Close autonomous panel"
               >
                 <svg
                   width="16"
@@ -1862,18 +1929,19 @@ export default function AutonomousPanel({
                   <span>Max iterations</span>
                   <input
                     type="number"
-                    min={2}
+                    min={0}
                     max={40}
                     value={settings.maxIterations}
                     onChange={(event) => {
                       const value = Number(event.target.value);
                       if (!Number.isFinite(value)) return;
-                      updateSettings("maxIterations", clamp(value, 2, 40));
+                      updateSettings("maxIterations", normalizeMaxIterations(value));
                     }}
                     className="w-20 rounded-xl border border-white/15 bg-neutral-800 px-2 py-1 text-sm text-neutral-100"
                     disabled={running}
                   />
                 </label>
+                <span className="text-[11px] text-neutral-500">0 = unbounded</span>
 
                 <button
                   onClick={applyCodingDefaults}
@@ -2139,8 +2207,8 @@ export default function AutonomousPanel({
                       Iterations:{" "}
                       <span className="font-mono">
                         {result
-                          ? `${result.iterationsUsed}/${result.maxIterations}`
-                          : `${liveStepCount}/${settings.maxIterations}`}
+                          ? formatIterationProgress(result.iterationsUsed, result.maxIterations)
+                          : formatIterationProgress(liveStepCount, settings.maxIterations)}
                       </span>
                     </div>
                     <div>
@@ -2917,7 +2985,7 @@ export default function AutonomousPanel({
                     <h3 className="text-sm font-semibold">Run History</h3>
                     {history.length > 0 && (
                       <button
-                        onClick={() => setHistory([])}
+                        onClick={clearHistory}
                         className="text-xs text-neutral-500 hover:text-neutral-700 dark:hover:text-neutral-300 cursor-pointer"
                       >
                         Clear
@@ -3147,7 +3215,7 @@ export default function AutonomousPanel({
                                 {entry.pinned ? "Unpin" : "Pin"}
                               </button>
                               <button
-                                onClick={() => void forgetMemory(entry.id)}
+                                onClick={() => void forgetMemory(entry)}
                                 className="text-[10px] px-1.5 py-1 rounded border border-red-300 text-red-600 dark:border-red-800 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-950/40 cursor-pointer"
                               >
                                 Forget
@@ -3172,7 +3240,7 @@ export default function AutonomousPanel({
 
   return (
     <>
-      <div className="fixed inset-0 bg-black/45 z-40" onClick={onClose} />
+      <div className="fixed inset-0 bg-black/45 z-40" onClick={onClose} aria-hidden="true" />
       {panel}
     </>
   );
