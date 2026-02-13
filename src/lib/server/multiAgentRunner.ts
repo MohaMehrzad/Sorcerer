@@ -26,6 +26,10 @@ import {
   retrieveMemoryContext,
   saveContinuationPacket,
 } from "@/lib/server/memoryStore";
+import {
+  buildLanguageGuidanceBlock,
+  resolveDefaultVerificationCommands,
+} from "@/lib/server/verificationPlanner";
 import type {
   AgentAction,
   AgentCommand,
@@ -83,10 +87,19 @@ const ALLOWED_PROGRAMS = new Set([
   "pnpm",
   "npm",
   "npx",
+  "yarn",
+  "bun",
+  "deno",
   "node",
   "python",
   "python3",
   "pytest",
+  "dotnet",
+  "mvn",
+  "gradle",
+  "composer",
+  "php",
+  "bundle",
   "uv",
   "go",
   "cargo",
@@ -134,9 +147,18 @@ const MAINTENANCE_ROLE_PROGRAMS = new Set([
   "pnpm",
   "npm",
   "npx",
+  "yarn",
+  "bun",
+  "deno",
   "node",
   "python",
   "python3",
+  "dotnet",
+  "mvn",
+  "gradle",
+  "composer",
+  "php",
+  "bundle",
   "tsc",
 ]);
 
@@ -994,8 +1016,26 @@ function detectLanguageHints(nodes: TreeNode[]): string[] {
         if (ext === ".go") hints.add("Go");
         if (ext === ".rs") hints.add("Rust");
         if (ext === ".java") hints.add("Java");
+        if (ext === ".cs") hints.add("C#");
+        if (ext === ".kt" || ext === ".kts") hints.add("Kotlin");
         if (ext === ".swift") hints.add("Swift");
+        if (ext === ".php") hints.add("PHP");
+        if (ext === ".rb") hints.add("Ruby");
+        if (ext === ".dart") hints.add("Dart");
+        if (ext === ".sql") hints.add("SQL");
+        if (ext === ".sh") hints.add("Shell");
         if (ext === ".c" || ext === ".cpp" || ext === ".h") hints.add("C/C++");
+        if (item.name === "go.mod") hints.add("Go");
+        if (item.name === "Cargo.toml") hints.add("Rust");
+        if (item.name === "pom.xml") hints.add("Java");
+        if (item.name === "build.gradle" || item.name === "build.gradle.kts") {
+          hints.add("Java");
+          hints.add("Kotlin");
+        }
+        if (item.name === "Package.swift") hints.add("Swift");
+        if (item.name === "composer.json") hints.add("PHP");
+        if (item.name === "Gemfile") hints.add("Ruby");
+        if (item.name === "deno.json" || item.name === "deno.jsonc") hints.add("Deno");
       } else if (item.children) {
         walk(item.children);
       }
@@ -1023,6 +1063,18 @@ async function buildProjectDigest(workspace: string): Promise<ProjectDigest> {
     hasTests = packageScripts.some((script) => /test/i.test(script));
   } catch {
     // Non-node project.
+  }
+
+  if (!hasTests) {
+    try {
+      await execFileAsync("rg", ["--files", "-g", "*test*", workspace], {
+        timeout: 6000,
+        maxBuffer: 120000,
+      });
+      hasTests = true;
+    } catch {
+      // No test files found.
+    }
   }
 
   return {
@@ -1089,7 +1141,13 @@ function validateProgramAndArgs(program: string, args: string[]) {
     }
   }
 
-  if (program === "pnpm" || program === "npm" || program === "npx") {
+  if (
+    program === "pnpm" ||
+    program === "npm" ||
+    program === "npx" ||
+    program === "yarn" ||
+    program === "bun"
+  ) {
     const subcommand = firstNonFlagArg(args);
     if (subcommand && DISALLOWED_PACKAGE_MANAGER_SUBCOMMANDS.has(subcommand)) {
       throw new Error(`Package-manager subcommand '${subcommand}' is not allowed`);
@@ -1650,43 +1708,10 @@ async function resolveVerificationCommands(
   request: AgentRunRequest,
   workspace: string
 ): Promise<AgentCommand[]> {
-  if (request.verificationCommands.length > 0) {
-    return request.verificationCommands;
-  }
-
-  try {
-    const raw = await readFile(path.join(workspace, "package.json"), "utf-8");
-    const parsed = JSON.parse(raw) as {
-      scripts?: Record<string, string>;
-      devDependencies?: Record<string, string>;
-    };
-    const scripts = parsed.scripts || {};
-    const commands: AgentCommand[] = [];
-
-    if (scripts.lint) {
-      commands.push({ program: "pnpm", args: ["-s", "lint"] });
-    }
-
-    if (parsed.devDependencies?.typescript || scripts.typecheck) {
-      if (scripts.typecheck) {
-        commands.push({ program: "pnpm", args: ["-s", "typecheck"] });
-      } else {
-        commands.push({ program: "pnpm", args: ["-s", "exec", "tsc", "--noEmit"] });
-      }
-    }
-
-    if (scripts.test) {
-      commands.push({ program: "pnpm", args: ["-s", "test"] });
-    }
-
-    if (scripts.build) {
-      commands.push({ program: "pnpm", args: ["-s", "build"] });
-    }
-
-    return commands;
-  } catch {
-    return [];
-  }
+  return (await resolveDefaultVerificationCommands(
+    workspace,
+    request.verificationCommands
+  )) as AgentCommand[];
 }
 
 function selectUnitVerificationCommands(commands: AgentCommand[]): AgentCommand[] {
@@ -2494,6 +2519,16 @@ function hasUnitEvidenceForMutation(params: {
   return false;
 }
 
+function goalLikelyRequiresCodeMutation(goal: string): boolean {
+  return /(?:create|write|implement|build|fix|refactor|add|generate|code|project|file|backend|frontend)/i.test(
+    goal
+  );
+}
+
+function dedupeLines(lines: string[]): string[] {
+  return Array.from(new Set(lines.filter((line) => line.trim().length > 0)));
+}
+
 function buildContinuationSummaryFromUnits(unitStates: WorkUnitState[]): {
   pendingWork: string[];
   nextActions: string[];
@@ -2845,6 +2880,10 @@ export async function runMultiAgentAutonomous(
   ]);
   const projectIntelligence =
     projectIntelligenceRaw || createEmptyProjectIntelligence(workspace);
+  const languageGuidance = buildLanguageGuidanceBlock(
+    projectDigest.languageHints,
+    projectIntelligence.stack
+  );
 
   const clarificationQuestions = request.requireClarificationBeforeEdits
     ? buildClarificationQuestions(projectDigest)
@@ -3043,6 +3082,9 @@ export async function runMultiAgentAutonomous(
         `Top directories: ${projectDigest.keyDirectories.join(", ") || "(none)"}`,
         `Scripts: ${projectDigest.packageScripts.join(", ") || "(none)"}`,
         `Project intelligence summary: ${projectIntelligence.summary}`,
+        "",
+        "Language-specific guidance:",
+        languageGuidance,
         "",
         "Clarification answers:",
         JSON.stringify(request.clarificationAnswers, null, 2),
@@ -3354,6 +3396,9 @@ export async function runMultiAgentAutonomous(
       "",
       "Active skills:",
       skillContext,
+      "",
+      "Language-specific guidance:",
+      languageGuidance,
     ].join("\n");
 
     const scoutStartedAt = Date.now();
@@ -3509,6 +3554,9 @@ export async function runMultiAgentAutonomous(
         "Memory diagnostics:",
         unitMemoryDiagnostics,
         "",
+        "Language-specific guidance:",
+        languageGuidance,
+        "",
         "Prior unit artifacts:",
         artifactStore.getUnitContext(unit.id),
       ].join("\n"),
@@ -3591,6 +3639,9 @@ export async function runMultiAgentAutonomous(
         "",
         "Memory diagnostics:",
         unitMemoryDiagnostics,
+        "",
+        "Language-specific guidance:",
+        languageGuidance,
         "",
         "Planned changes:",
         JSON.stringify(coder.changes, null, 2),
@@ -3980,6 +4031,26 @@ export async function runMultiAgentAutonomous(
     status = "failed";
   } else if (request.strictVerification && verificationPassed === false) {
     status = "verification_failed";
+  }
+
+  if (
+    !request.dryRun &&
+    goalLikelyRequiresCodeMutation(request.goal) &&
+    context.fileWriteCount === 0
+  ) {
+    status = "failed";
+    const noMutationMessage =
+      "No file mutations were applied for a coding goal. This run did not complete implementation work.";
+    synthesis = {
+      ...synthesis,
+      summary: `${noMutationMessage} ${synthesis.summary}`.trim(),
+      verification: dedupeLines([...synthesis.verification, noMutationMessage]),
+      remainingWork: dedupeLines([
+        ...synthesis.remainingWork,
+        "Apply concrete file changes that implement the requested goal.",
+      ]),
+    };
+    observability.recordFailure("run:zero_mutation_for_coding_goal");
   }
 
   let rollbackApplied = false;

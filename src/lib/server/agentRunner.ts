@@ -28,6 +28,10 @@ import {
   retrieveMemoryContext,
   saveContinuationPacket,
 } from "@/lib/server/memoryStore";
+import {
+  buildLanguageGuidanceBlock,
+  resolveDefaultVerificationCommands,
+} from "@/lib/server/verificationPlanner";
 
 const execFileAsync = promisify(execFile);
 
@@ -104,10 +108,19 @@ const ALLOWED_PROGRAMS = new Set([
   "pnpm",
   "npm",
   "npx",
+  "yarn",
+  "bun",
+  "deno",
   "node",
   "python",
   "python3",
   "pytest",
+  "dotnet",
+  "mvn",
+  "gradle",
+  "composer",
+  "php",
+  "bundle",
   "uv",
   "go",
   "cargo",
@@ -1395,8 +1408,26 @@ function detectLanguageHints(nodes: TreeNode[]): string[] {
         if (ext === ".go") hints.add("Go");
         if (ext === ".rs") hints.add("Rust");
         if (ext === ".java") hints.add("Java");
+        if (ext === ".cs") hints.add("C#");
+        if (ext === ".kt" || ext === ".kts") hints.add("Kotlin");
         if (ext === ".swift") hints.add("Swift");
+        if (ext === ".php") hints.add("PHP");
+        if (ext === ".rb") hints.add("Ruby");
+        if (ext === ".dart") hints.add("Dart");
+        if (ext === ".sql") hints.add("SQL");
+        if (ext === ".sh") hints.add("Shell");
         if (ext === ".c" || ext === ".cpp" || ext === ".h") hints.add("C/C++");
+        if (item.name === "go.mod") hints.add("Go");
+        if (item.name === "Cargo.toml") hints.add("Rust");
+        if (item.name === "pom.xml") hints.add("Java");
+        if (item.name === "build.gradle" || item.name === "build.gradle.kts") {
+          hints.add("Java");
+          hints.add("Kotlin");
+        }
+        if (item.name === "Package.swift") hints.add("Swift");
+        if (item.name === "composer.json") hints.add("PHP");
+        if (item.name === "Gemfile") hints.add("Ruby");
+        if (item.name === "deno.json" || item.name === "deno.jsonc") hints.add("Deno");
       } else if (item.children) {
         walk(item.children);
       }
@@ -2237,7 +2268,13 @@ function validateProgramAndArgs(program: string, args: string[]) {
     }
   }
 
-  if (program === "pnpm" || program === "npm" || program === "npx") {
+  if (
+    program === "pnpm" ||
+    program === "npm" ||
+    program === "npx" ||
+    program === "yarn" ||
+    program === "bun"
+  ) {
     const subcommand = firstNonFlagArg(args);
     if (subcommand && DISALLOWED_PACKAGE_MANAGER_SUBCOMMANDS.has(subcommand)) {
       throw new Error(`Package-manager subcommand '${subcommand}' is not allowed`);
@@ -2756,6 +2793,10 @@ function buildInitialMessage(
   continuationHint: string,
   memoryDiagnosticsHint: string
 ): string {
+  const languageGuidance = buildLanguageGuidanceBlock(
+    projectDigest.languageHints,
+    projectIntelligence.stack
+  );
   const verificationCommands =
     request.verificationCommands.length > 0
       ? request.verificationCommands.map((command) => `- ${stringifyCommand(command)}`).join("\n")
@@ -2791,6 +2832,9 @@ function buildInitialMessage(
     "",
     "Project intelligence:",
     formatIntelligenceForPrompt(projectIntelligence),
+    "",
+    "Language-specific guidance:",
+    languageGuidance,
     "",
     "Retrieved long-term memory:",
     longTermMemoryBlock || "(none)",
@@ -3081,46 +3125,10 @@ async function resolveVerificationCommands(
   request: AgentRunRequest,
   workspace: string
 ): Promise<AgentCommand[]> {
-  if (request.verificationCommands.length > 0) {
-    return request.verificationCommands;
-  }
-
-  const packageJsonPath = path.join(workspace, "package.json");
-
-  try {
-    const raw = await readFile(packageJsonPath, "utf-8");
-    const parsed = JSON.parse(raw) as {
-      scripts?: Record<string, string>;
-      devDependencies?: Record<string, string>;
-    };
-
-    const commands: AgentCommand[] = [];
-    const scripts = parsed.scripts || {};
-
-    if (scripts.lint) {
-      commands.push({ program: "pnpm", args: ["-s", "lint"] });
-    }
-
-    if (parsed.devDependencies?.typescript || scripts.typecheck) {
-      if (scripts.typecheck) {
-        commands.push({ program: "pnpm", args: ["-s", "typecheck"] });
-      } else {
-        commands.push({ program: "pnpm", args: ["-s", "exec", "tsc", "--noEmit"] });
-      }
-    }
-
-    if (scripts.test) {
-      commands.push({ program: "pnpm", args: ["-s", "test"] });
-    }
-
-    if (scripts.build) {
-      commands.push({ program: "pnpm", args: ["-s", "build"] });
-    }
-
-    return commands;
-  } catch {
-    return [];
-  }
+  return (await resolveDefaultVerificationCommands(
+    workspace,
+    request.verificationCommands
+  )) as AgentCommand[];
 }
 
 function finalizeResult(
