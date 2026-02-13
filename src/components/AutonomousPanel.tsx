@@ -342,7 +342,7 @@ interface AutonomousPanelProps {
   embedded?: boolean;
 }
 
-const SETTINGS_STORAGE_KEY = "autonomous-agent-settings-v1";
+const SETTINGS_STORAGE_KEY = "autonomous-agent-settings-v2";
 const HISTORY_STORAGE_KEY = "autonomous-agent-history-v1";
 const MAX_HISTORY_ITEMS = 12;
 

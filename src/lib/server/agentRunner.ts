@@ -1250,7 +1250,8 @@ function isRetryableModelError(err: unknown): boolean {
     /Model request timeout/i.test(message) ||
     /Model completion body timeout/i.test(message) ||
     /Connection error/i.test(message) ||
-    /timed?\s*out/i.test(message)
+    /timed?\s*out/i.test(message) ||
+    /operation was aborted/i.test(message)
   );
 }
 
@@ -2949,6 +2950,10 @@ async function getDecision(
       }));
       lastRawContent = content;
     } catch (err) {
+      if (signal?.aborted) {
+        throw new RunCanceledError("Run canceled by user");
+      }
+
       if (!isRetryableModelError(err)) {
         throw err;
       }
@@ -4292,6 +4297,7 @@ export function normalizeAgentRunRequest(body: unknown): {
   if (!goal) {
     return { error: "Goal is required and must be a non-empty string" };
   }
+  const mutationGoal = goalLikelyRequiresCodeMutation(goal);
 
   const workspacePath =
     typeof data.workspacePath === "string" && data.workspacePath.trim().length > 0
@@ -4343,16 +4349,16 @@ export function normalizeAgentRunRequest(body: unknown): {
     MAX_TEAM_SIZE
   );
 
-  const strictVerification = parseBoolean(data.strictVerification, true);
+  const strictVerification = parseBoolean(data.strictVerification, mutationGoal ? false : true);
   const autoFixVerification = parseBoolean(data.autoFixVerification, true);
   const dryRun = parseBoolean(data.dryRun, false);
-  const rollbackOnFailure = parseBoolean(data.rollbackOnFailure, true);
-  const runPreflightChecks = parseBoolean(data.runPreflightChecks, true);
+  const rollbackOnFailure = parseBoolean(data.rollbackOnFailure, mutationGoal ? false : true);
+  const runPreflightChecks = parseBoolean(data.runPreflightChecks, mutationGoal ? false : true);
   const requireClarificationBeforeEdits = parseBoolean(
     data.requireClarificationBeforeEdits,
     false
   );
-  const resumeFromLastCheckpoint = parseBoolean(data.resumeFromLastCheckpoint, true);
+  const resumeFromLastCheckpoint = parseBoolean(data.resumeFromLastCheckpoint, false);
 
   let clarificationAnswers: Record<string, string> = {};
   if (data.clarificationAnswers !== undefined) {

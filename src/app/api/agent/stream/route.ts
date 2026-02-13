@@ -2,12 +2,11 @@ import { NextRequest, NextResponse } from "next/server";
 import {
   AgentRunProgressEvent,
   normalizeAgentRunRequest,
-  runAutonomousAgent,
 } from "@/lib/server/agentRunner";
-import { runMultiAgentAutonomous } from "@/lib/server/multiAgentRunner";
+import { runAgentWithAutoFallback } from "@/lib/server/agentExecution";
 import { buildCorsHeaders, enforceApiAccess } from "@/lib/server/accessGuard";
 
-export const maxDuration = 300;
+export const maxDuration = 1800;
 
 function encodeEvent(event: AgentRunProgressEvent | { type: "completed" | "failed"; data: unknown }): Uint8Array {
   return new TextEncoder().encode(`${JSON.stringify(event)}\n`);
@@ -69,16 +68,10 @@ export async function POST(req: NextRequest) {
       }, 15000);
 
       try {
-        const result =
-          normalized.request!.executionMode === "multi"
-            ? await runMultiAgentAutonomous(normalized.request!, {
-                signal: req.signal,
-                onEvent: (event) => send(event),
-              })
-            : await runAutonomousAgent(normalized.request!, {
-                signal: req.signal,
-                onEvent: (event) => send(event),
-              });
+        const { result } = await runAgentWithAutoFallback(normalized.request!, {
+          signal: req.signal,
+          onEvent: (event) => send(event),
+        });
 
         send({
           type: result.status === "failed" ? "failed" : "completed",

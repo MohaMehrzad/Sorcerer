@@ -1,12 +1,11 @@
 import { NextRequest, NextResponse } from "next/server";
 import {
   normalizeAgentRunRequest,
-  runAutonomousAgent,
 } from "@/lib/server/agentRunner";
-import { runMultiAgentAutonomous } from "@/lib/server/multiAgentRunner";
+import { runAgentWithAutoFallback } from "@/lib/server/agentExecution";
 import { buildCorsHeaders, enforceApiAccess } from "@/lib/server/accessGuard";
 
-export const maxDuration = 300;
+export const maxDuration = 1800;
 
 function corsHeaders(req: NextRequest): Record<string, string> {
   return buildCorsHeaders(req, "POST, OPTIONS");
@@ -45,14 +44,9 @@ export async function POST(req: NextRequest) {
     );
   }
 
-  const result =
-    normalized.request.executionMode === "multi"
-      ? await runMultiAgentAutonomous(normalized.request, {
-          signal: req.signal,
-        })
-      : await runAutonomousAgent(normalized.request, {
-          signal: req.signal,
-        });
+  const { result } = await runAgentWithAutoFallback(normalized.request, {
+    signal: req.signal,
+  });
 
   const isFailed = result.status === "failed";
   const status = isFailed ? 500 : 200;
