@@ -4,8 +4,14 @@
 [![Forks](https://img.shields.io/github/forks/MohaMehrzad/Sorcerer?style=for-the-badge)](https://github.com/MohaMehrzad/Sorcerer/network/members)
 [![License](https://img.shields.io/github/license/MohaMehrzad/Sorcerer?style=for-the-badge)](./LICENSE)
 [![CI](https://img.shields.io/github/actions/workflow/status/MohaMehrzad/Sorcerer/ci.yml?branch=main&style=for-the-badge)](https://github.com/MohaMehrzad/Sorcerer/actions)
+[![Latest Release](https://img.shields.io/github/v/release/MohaMehrzad/Sorcerer?style=for-the-badge)](https://github.com/MohaMehrzad/Sorcerer/releases)
 
 **Sorcerer is a local-first autonomous coding agent that plans, edits, verifies, recovers from failures, and keeps moving until acceptance criteria are satisfied.**
+
+If this project helps you, please star it and join discussions:
+
+- Star: [github.com/MohaMehrzad/Sorcerer/stargazers](https://github.com/MohaMehrzad/Sorcerer/stargazers)
+- Discuss: [github.com/MohaMehrzad/Sorcerer/discussions](https://github.com/MohaMehrzad/Sorcerer/discussions)
 
 ![Sorcerer social preview](./docs/assets/social-preview.png)
 
@@ -88,6 +94,11 @@ See [`CHANGELOG.md`](./CHANGELOG.md).
 ## Growth
 
 See [`docs/LAUNCH_PLAYBOOK.md`](./docs/LAUNCH_PLAYBOOK.md) for launch strategy and ready-to-post distribution copy.
+See [`docs/COMMUNITY_GROWTH_CHECKLIST.md`](./docs/COMMUNITY_GROWTH_CHECKLIST.md) for weekly operating cadence.
+
+## Support
+
+See [`SUPPORT.md`](./SUPPORT.md).
 
 ## License
 
