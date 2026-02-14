@@ -85,6 +85,10 @@ Read:
 
 See [`CHANGELOG.md`](./CHANGELOG.md).
 
+## Growth
+
+See [`docs/LAUNCH_PLAYBOOK.md`](./docs/LAUNCH_PLAYBOOK.md) for launch strategy and ready-to-post distribution copy.
+
 ## License
 
 MIT - see [`LICENSE`](./LICENSE).
