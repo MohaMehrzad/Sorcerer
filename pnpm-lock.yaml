@@ -10,19 +10,19 @@ importers:
     dependencies:
       next:
         specifier: 16.1.6
-        version: 16.1.6(@babel/core@7.29.0)(react-dom@19.2.3(react@19.2.3))(react@19.2.3)
+        version: 16.1.6(@babel/core@7.29.0)(react-dom@19.2.3(react@19.2.4))(react@19.2.4)
       react:
-        specifier: 19.2.3
-        version: 19.2.3
+        specifier: 19.2.4
+        version: 19.2.4
       react-dom:
         specifier: 19.2.3
-        version: 19.2.3(react@19.2.3)
+        version: 19.2.3(react@19.2.4)
       react-markdown:
         specifier: ^10.1.0
-        version: 10.1.0(@types/react@19.2.14)(react@19.2.3)
+        version: 10.1.0(@types/react@19.2.14)(react@19.2.4)
       react-syntax-highlighter:
         specifier: ^16.1.0
-        version: 16.1.0(react@19.2.3)
+        version: 16.1.0(react@19.2.4)
       remark-gfm:
         specifier: ^4.0.1
         version: 4.0.1
@@ -1917,8 +1917,8 @@ packages:
     peerDependencies:
       react: '>= 0.14.0'
 
-  react@19.2.3:
-    resolution: {integrity: sha512-Ku/hhYbVjOQnXDZFv2+RibmLFGwFdeeKHFcOTlrt7xplBnya5OGn/hIRDsqDiSUcfORsDC7MPxwork8jBwsIWA==}
+  react@19.2.4:
+    resolution: {integrity: sha512-9nfp2hYpCwOjAN+8TZFGhtWEwgvWHXqESH8qT89AT/lWklpLON22Lc8pEtnpsZz7VmawabSU0gCjnj8aC0euHQ==}
     engines: {node: '>=0.10.0'}
 
   reflect.getprototypeof@1.0.10:
@@ -4290,16 +4290,16 @@ snapshots:
 
   natural-compare@1.4.0: {}
 
-  next@16.1.6(@babel/core@7.29.0)(react-dom@19.2.3(react@19.2.3))(react@19.2.3):
+  next@16.1.6(@babel/core@7.29.0)(react-dom@19.2.3(react@19.2.4))(react@19.2.4):
     dependencies:
       '@next/env': 16.1.6
       '@swc/helpers': 0.5.15
       baseline-browser-mapping: 2.9.19
       caniuse-lite: 1.0.30001769
       postcss: 8.4.31
-      react: 19.2.3
-      react-dom: 19.2.3(react@19.2.3)
-      styled-jsx: 5.1.6(@babel/core@7.29.0)(react@19.2.3)
+      react: 19.2.4
+      react-dom: 19.2.3(react@19.2.4)
+      styled-jsx: 5.1.6(@babel/core@7.29.0)(react@19.2.4)
     optionalDependencies:
       '@next/swc-darwin-arm64': 16.1.6
       '@next/swc-darwin-x64': 16.1.6
@@ -4437,14 +4437,14 @@ snapshots:
 
   queue-microtask@1.2.3: {}
 
-  react-dom@19.2.3(react@19.2.3):
+  react-dom@19.2.3(react@19.2.4):
     dependencies:
-      react: 19.2.3
+      react: 19.2.4
       scheduler: 0.27.0
 
   react-is@16.13.1: {}
 
-  react-markdown@10.1.0(@types/react@19.2.14)(react@19.2.3):
+  react-markdown@10.1.0(@types/react@19.2.14)(react@19.2.4):
     dependencies:
       '@types/hast': 3.0.4
       '@types/mdast': 4.0.4
@@ -4453,7 +4453,7 @@ snapshots:
       hast-util-to-jsx-runtime: 2.3.6
       html-url-attributes: 3.0.1
       mdast-util-to-hast: 13.2.1
-      react: 19.2.3
+      react: 19.2.4
       remark-parse: 11.0.0
       remark-rehype: 11.1.2
       unified: 11.0.5
@@ -4462,17 +4462,17 @@ snapshots:
     transitivePeerDependencies:
       - supports-color
 
-  react-syntax-highlighter@16.1.0(react@19.2.3):
+  react-syntax-highlighter@16.1.0(react@19.2.4):
     dependencies:
       '@babel/runtime': 7.28.6
       highlight.js: 10.7.3
       highlightjs-vue: 1.0.0
       lowlight: 1.20.0
       prismjs: 1.30.0
-      react: 19.2.3
+      react: 19.2.4
       refractor: 5.0.0
 
-  react@19.2.3: {}
+  react@19.2.4: {}
 
   reflect.getprototypeof@1.0.10:
     dependencies:
@@ -4748,10 +4748,10 @@ snapshots:
     dependencies:
       inline-style-parser: 0.2.7
 
-  styled-jsx@5.1.6(@babel/core@7.29.0)(react@19.2.3):
+  styled-jsx@5.1.6(@babel/core@7.29.0)(react@19.2.4):
     dependencies:
       client-only: 0.0.1
-      react: 19.2.3
+      react: 19.2.4
     optionalDependencies:
       '@babel/core': 7.29.0
 
