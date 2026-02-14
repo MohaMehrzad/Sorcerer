@@ -96,13 +96,14 @@ See [`CHANGELOG.md`](./CHANGELOG.md).
 See [`docs/LAUNCH_PLAYBOOK.md`](./docs/LAUNCH_PLAYBOOK.md) for launch strategy and ready-to-post distribution copy.
 See [`docs/COMMUNITY_GROWTH_CHECKLIST.md`](./docs/COMMUNITY_GROWTH_CHECKLIST.md) for weekly operating cadence.
 See [`docs/GITHUB_PROJECT_SETUP.md`](./docs/GITHUB_PROJECT_SETUP.md) for Projects v2 bootstrap.
+See [`docs/WIKI_SETUP.md`](./docs/WIKI_SETUP.md) for one-time wiki bootstrap + sync.
 
 ## GitHub Surfaces
 
 - Agents: custom agent profiles in [`.github/agents`](./.github/agents)
 - Discussions: category forms in [`.github/DISCUSSION_TEMPLATE`](./.github/DISCUSSION_TEMPLATE)
 - Actions: CI + security + community workflows in [`.github/workflows`](./.github/workflows)
-- Wiki source: [`docs/wiki`](./docs/wiki) (sync via `scripts/sync-wiki.sh`)
+- Wiki source: [`docs/wiki`](./docs/wiki) (auto-sync via `wiki-sync.yml` and `scripts/sync-wiki.sh`)
 - Security: policy in [`SECURITY.md`](./SECURITY.md) and automated checks in Actions
 
 ## Support

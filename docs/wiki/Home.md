@@ -6,6 +6,7 @@ Sorcerer is a local-first autonomous coding agent focused on safe execution, rec
 - [[Getting Started]]
 - [[Architecture]]
 - [[Contributing]]
+- [[FAQ]]
 
 ## Useful Links
 - Repository: https://github.com/MohaMehrzad/Sorcerer
