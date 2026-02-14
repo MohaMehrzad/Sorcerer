@@ -3,6 +3,10 @@
 import { FormEvent, useCallback, useEffect, useRef, useState } from "react";
 import type { BotProfile } from "@/lib/store";
 import { apiFetch } from "@/lib/client/apiFetch";
+import BotContextSection from "@/components/onboarding/BotContextSection";
+import ConnectionSection from "@/components/onboarding/ConnectionSection";
+import SkillsSection from "@/components/onboarding/SkillsSection";
+import { SkillMeta } from "@/components/onboarding/types";
 
 const DEFAULT_API_URL = "https://api.viwoapp.net/v1/chat/completions";
 const DEFAULT_MODEL = "qwen3:30b-128k";
@@ -13,16 +17,6 @@ interface BotOnboardingProps {
   initialProfile: BotProfile | null;
   onSave: (profile: BotProfile) => void;
   onClose: () => void;
-}
-
-interface SkillMeta {
-  id: string;
-  name: string;
-  relativePath: string;
-  absolutePath: string;
-  updatedAt: string;
-  size: number;
-  preview: string;
 }
 
 export default function BotOnboarding({
@@ -377,250 +371,74 @@ export default function BotOnboarding({
             </div>
 
             <form onSubmit={handleSubmit} className="p-6 space-y-5 overflow-y-auto">
-              <div className="grid gap-4 md:grid-cols-2">
-                <label className="block text-sm">
-                  <span className="block text-xs font-semibold uppercase tracking-wider text-neutral-500 mb-1">
-                    Bot Name
-                  </span>
-                  <input
-                    ref={firstInputRef}
-                    type="text"
-                    value={botName}
-                    onChange={(event) => {
-                      setBotName(event.target.value);
-                      setConnectionSuccess(null);
-                      setConnectionError(null);
-                    }}
-                    placeholder="e.g. Merlin, Athena, Forge"
-                    className="w-full rounded-xl border border-black/10 dark:border-white/10 bg-white/80 dark:bg-neutral-900 px-3 py-2"
-                  />
-                </label>
+              <ConnectionSection
+                firstInputRef={firstInputRef}
+                botName={botName}
+                workspacePath={workspacePath}
+                apiKey={apiKey}
+                apiUrl={apiUrl}
+                model={model}
+                workspacePickerBusy={workspacePickerBusy}
+                workspacePickerError={workspacePickerError}
+                testingConnection={testingConnection}
+                connectionSuccess={connectionSuccess}
+                connectionError={connectionError}
+                onBotNameChange={(value) => {
+                  setBotName(value);
+                  setConnectionSuccess(null);
+                  setConnectionError(null);
+                }}
+                onWorkspacePathChange={(value) => {
+                  setWorkspacePath(value);
+                  setSkillActionSuccess(null);
+                  setWorkspacePickerError(null);
+                }}
+                onWorkspacePathBlur={(value) => {
+                  void loadSkills(value);
+                }}
+                onPickWorkspace={() => {
+                  void handlePickWorkspace();
+                }}
+                onApiKeyChange={(value) => {
+                  setApiKey(value);
+                  setConnectionSuccess(null);
+                  setConnectionError(null);
+                }}
+                onApiUrlChange={(value) => {
+                  setApiUrl(value);
+                  setConnectionSuccess(null);
+                  setConnectionError(null);
+                }}
+                onModelChange={(value) => {
+                  setModel(value);
+                  setConnectionSuccess(null);
+                  setConnectionError(null);
+                }}
+                onTestConnection={() => {
+                  void handleTestConnection();
+                }}
+                defaultApiUrl={DEFAULT_API_URL}
+                defaultModel={DEFAULT_MODEL}
+              />
 
-                <label className="block text-sm">
-                  <span className="block text-xs font-semibold uppercase tracking-wider text-neutral-500 mb-1">
-                    Workspace Folder
-                  </span>
-                  <input
-                    type="text"
-                    value={workspacePath}
-                    onChange={(event) => {
-                      setWorkspacePath(event.target.value);
-                      setSkillActionSuccess(null);
-                      setWorkspacePickerError(null);
-                    }}
-                    onBlur={(event) => {
-                      loadSkills(event.target.value);
-                    }}
-                    placeholder="/Users/you/Projects/my-repo or ."
-                    className="w-full rounded-xl border border-black/10 dark:border-white/10 bg-white/80 dark:bg-neutral-900 px-3 py-2 font-mono"
-                  />
-                  <span className="mt-2 flex items-center gap-2">
-                    <button
-                      type="button"
-                      onClick={handlePickWorkspace}
-                      disabled={workspacePickerBusy}
-                      className="px-2.5 py-1.5 rounded-lg border border-black/10 dark:border-white/10 text-xs hover:bg-black/5 dark:hover:bg-white/10 disabled:opacity-60 disabled:cursor-not-allowed transition-colors cursor-pointer"
-                    >
-                      {workspacePickerBusy ? "Opening..." : "Pick Workspace"}
-                    </button>
-                  </span>
-                  {workspacePickerError && (
-                    <span className="mt-1 block text-xs text-red-600 dark:text-red-400">
-                      {workspacePickerError}
-                    </span>
-                  )}
-                </label>
+              <SkillsSection
+                workspacePath={workspacePath}
+                skillsRoot={skillsRoot}
+                skills={skills}
+                skillsLoading={skillsLoading}
+                creatingSkill={creatingSkill}
+                skillPrompt={skillPrompt}
+                setSkillPrompt={setSkillPrompt}
+                enabledSkillFiles={enabledSkillFiles}
+                skillsError={skillsError}
+                skillActionError={skillActionError}
+                skillActionSuccess={skillActionSuccess}
+                onRefresh={loadSkills}
+                onCreate={handleCreateSkill}
+                onToggleSkill={toggleSkill}
+              />
 
-                <label className="block text-sm md:col-span-2">
-                  <span className="block text-xs font-semibold uppercase tracking-wider text-neutral-500 mb-1">
-                    Model API Key
-                  </span>
-                  <input
-                    type="password"
-                    value={apiKey}
-                    onChange={(event) => {
-                      setApiKey(event.target.value);
-                      setConnectionSuccess(null);
-                      setConnectionError(null);
-                    }}
-                    placeholder="sk-..."
-                    className="w-full rounded-xl border border-black/10 dark:border-white/10 bg-white/80 dark:bg-neutral-900 px-3 py-2 font-mono"
-                  />
-                  <span className="mt-1 block text-xs text-neutral-500">
-                    Stored only in browser session storage (clears on close).
-                  </span>
-                </label>
-
-                <label className="block text-sm">
-                  <span className="block text-xs font-semibold uppercase tracking-wider text-neutral-500 mb-1">
-                    Model API URL
-                  </span>
-                  <input
-                    type="text"
-                    value={apiUrl}
-                    onChange={(event) => {
-                      setApiUrl(event.target.value);
-                      setConnectionSuccess(null);
-                      setConnectionError(null);
-                    }}
-                    placeholder={DEFAULT_API_URL}
-                    className="w-full rounded-xl border border-black/10 dark:border-white/10 bg-white/80 dark:bg-neutral-900 px-3 py-2 font-mono"
-                  />
-                </label>
-
-                <label className="block text-sm">
-                  <span className="block text-xs font-semibold uppercase tracking-wider text-neutral-500 mb-1">
-                    Model Name
-                  </span>
-                  <input
-                    type="text"
-                    value={model}
-                    onChange={(event) => {
-                      setModel(event.target.value);
-                      setConnectionSuccess(null);
-                      setConnectionError(null);
-                    }}
-                    placeholder={DEFAULT_MODEL}
-                    className="w-full rounded-xl border border-black/10 dark:border-white/10 bg-white/80 dark:bg-neutral-900 px-3 py-2 font-mono"
-                  />
-                </label>
-
-                <div className="md:col-span-2">
-                  <div className="flex flex-wrap items-center gap-2">
-                    <button
-                      type="button"
-                      onClick={handleTestConnection}
-                      disabled={
-                        testingConnection ||
-                        !apiKey.trim() ||
-                        !apiUrl.trim() ||
-                        !model.trim()
-                      }
-                      className="px-3 py-2 rounded-lg border border-black/10 dark:border-white/10 text-sm hover:bg-black/5 dark:hover:bg-white/10 disabled:opacity-60 disabled:cursor-not-allowed transition-colors cursor-pointer"
-                    >
-                      {testingConnection ? "Testing..." : "Test Connection"}
-                    </button>
-                    {connectionSuccess && (
-                      <span className="text-sm text-emerald-600 dark:text-emerald-400">
-                        {connectionSuccess}
-                      </span>
-                    )}
-                  </div>
-                  {connectionError && (
-                    <p className="mt-1 text-sm text-red-600 dark:text-red-400">
-                      {connectionError}
-                    </p>
-                  )}
-                </div>
-              </div>
-
-              <details className="rounded-2xl border border-black/10 dark:border-white/10 bg-white/70 dark:bg-neutral-950/70 p-4">
-                <summary className="cursor-pointer text-sm font-semibold text-neutral-700 dark:text-neutral-200">
-                  Skills & Playbooks
-                </summary>
-                <div className="mt-4 space-y-3">
-                  <div className="flex items-center justify-between gap-2">
-                    <div>
-                      <p className="text-sm font-medium">Skills</p>
-                      <p className="text-xs text-neutral-500 mt-0.5">
-                        Generate markdown skills from simple prompts and enable them for autonomous runs.
-                      </p>
-                    </div>
-                    <button
-                      type="button"
-                      onClick={() => loadSkills(workspacePath)}
-                      className="px-2.5 py-1.5 rounded-lg border border-black/10 dark:border-white/10 text-xs hover:bg-black/5 dark:hover:bg-white/10 transition-colors cursor-pointer"
-                      disabled={skillsLoading || creatingSkill}
-                    >
-                      {skillsLoading ? "Refreshing..." : "Refresh"}
-                    </button>
-                  </div>
-
-                  <label className="block text-sm">
-                    <span className="block text-xs font-semibold uppercase tracking-wider text-neutral-500 mb-1">
-                      Skill Prompt
-                    </span>
-                    <textarea
-                      value={skillPrompt}
-                      onChange={(event) => setSkillPrompt(event.target.value)}
-                      placeholder="Example: Create a full NestJS backend skill with architecture, testing, and deployment checklists."
-                      className="w-full min-h-[90px] rounded-xl border border-black/10 dark:border-white/10 bg-white/80 dark:bg-neutral-900 px-3 py-2"
-                    />
-                  </label>
-
-                  <div className="flex items-center justify-between gap-2">
-                    <p className="text-xs text-neutral-500">
-                      Creates markdown files under{" "}
-                      <span className="font-mono">{skillsRoot || ".sorcerer/skills"}</span> globally for Sorcerer.
-                    </p>
-                    <button
-                      type="button"
-                      onClick={handleCreateSkill}
-                      disabled={creatingSkill || !skillPrompt.trim()}
-                      className="px-3 py-2 rounded-lg bg-emerald-600 text-white text-xs hover:bg-emerald-700 disabled:opacity-60 disabled:cursor-not-allowed transition-colors cursor-pointer"
-                    >
-                      {creatingSkill ? "Generating Skill..." : "Generate Skill"}
-                    </button>
-                  </div>
-
-                  {skillsError && (
-                    <p className="text-xs text-red-600 dark:text-red-400">{skillsError}</p>
-                  )}
-                  {skillActionError && (
-                    <p className="text-xs text-red-600 dark:text-red-400">{skillActionError}</p>
-                  )}
-                  {skillActionSuccess && (
-                    <p className="text-xs text-emerald-600 dark:text-emerald-400 font-mono break-all">
-                      {skillActionSuccess}
-                    </p>
-                  )}
-
-                  <div className="space-y-2 max-h-52 overflow-auto pr-1">
-                    {skills.length === 0 ? (
-                      <p className="text-xs text-neutral-500">(no global skills found yet)</p>
-                    ) : (
-                      skills.map((skill) => (
-                        <label
-                          key={skill.id}
-                          className="flex items-start gap-2 rounded-lg border border-black/10 dark:border-white/10 p-2 bg-white/80 dark:bg-neutral-950"
-                        >
-                          <input
-                            type="checkbox"
-                            checked={enabledSkillFiles.includes(skill.id)}
-                            onChange={() => toggleSkill(skill.id)}
-                            className="mt-1"
-                          />
-                          <span className="min-w-0">
-                            <span className="block text-xs font-medium truncate">
-                              {skill.name}
-                            </span>
-                            <span className="block text-xs text-neutral-500 font-mono truncate">
-                              {skill.relativePath}
-                            </span>
-                            <span className="block text-xs text-neutral-500 mt-1 line-clamp-2 whitespace-pre-wrap">
-                              {skill.preview}
-                            </span>
-                          </span>
-                        </label>
-                      ))
-                    )}
-                  </div>
-                </div>
-              </details>
-
-              <details className="rounded-2xl border border-black/10 dark:border-white/10 bg-white/70 dark:bg-neutral-950/70 p-4">
-                <summary className="cursor-pointer text-sm font-semibold text-neutral-700 dark:text-neutral-200">
-                  Bot Context (Optional)
-                </summary>
-                <div className="mt-3">
-                  <textarea
-                    value={botContext}
-                    onChange={(event) => setBotContext(event.target.value)}
-                    placeholder="Tone, constraints, domain rules, preferred style..."
-                    className="w-full min-h-[96px] rounded-xl border border-black/10 dark:border-white/10 bg-white/80 dark:bg-neutral-900 px-3 py-2"
-                  />
-                </div>
-              </details>
+              <BotContextSection botContext={botContext} setBotContext={setBotContext} />
 
               {error && <p className="text-sm text-red-600 dark:text-red-400">{error}</p>}
 
