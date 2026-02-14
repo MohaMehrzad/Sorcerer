@@ -1,0 +1,27 @@
+name: Wiki Sync
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - docs/wiki/**
+      - scripts/sync-wiki.sh
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Sync docs/wiki to GitHub Wiki
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          WIKI_SYNC_REQUIRE_REMOTE: "false"
+        run: |
+          bash scripts/sync-wiki.sh MohaMehrzad Sorcerer docs/wiki

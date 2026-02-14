@@ -43,8 +43,26 @@ function truncate(text: string, maxChars: number): string {
 
 function sanitizeSlug(raw: string): string {
   const trimmed = raw.trim().toLowerCase();
-  const normalized = trimmed.replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "");
-  return normalized || "skill";
+  let result = "";
+  let dashPending = false;
+
+  for (const char of trimmed) {
+    const code = char.charCodeAt(0);
+    const isAlpha = code >= 97 && code <= 122;
+    const isDigit = code >= 48 && code <= 57;
+    if (isAlpha || isDigit) {
+      if (dashPending && result.length > 0) {
+        result += "-";
+      }
+      result += char;
+      dashPending = false;
+      continue;
+    }
+
+    dashPending = result.length > 0;
+  }
+
+  return result || "skill";
 }
 
 function parseTitleFromMarkdown(content: string): string {
@@ -131,7 +149,10 @@ async function enumerateMarkdownFiles(root: string): Promise<string[]> {
   const files: string[] = [];
 
   for (const entry of entries) {
-    const fullPath = path.join(root, entry.name);
+    const fullPath = ensureInsideRoot(root, path.join(root, entry.name));
+    if (!fullPath) {
+      continue;
+    }
     if (entry.isDirectory()) {
       const nested = await enumerateMarkdownFiles(fullPath);
       files.push(...nested);
@@ -205,27 +226,53 @@ async function isDirectory(targetPath: string): Promise<boolean> {
   }
 }
 
+function isPathWithinAnyRoot(candidatePath: string, roots: string[]): boolean {
+  return roots.some((root) => ensureInsideRoot(root, candidatePath) !== null);
+}
+
+function getAllowedSkillRoots(workspace: string): string[] {
+  const roots = new Set<string>();
+  const resolvedWorkspace = path.resolve(workspace);
+  roots.add(path.resolve(getGlobalSkillsRoot()));
+  roots.add(resolvedWorkspace);
+
+  try {
+    roots.add(path.resolve(normalizePathForWorkspace(LEGACY_WORKSPACE_SKILLS_DIR, resolvedWorkspace)));
+  } catch {
+    // Ignore invalid legacy workspace skills root.
+  }
+
+  try {
+    roots.add(
+      path.resolve(normalizePathForWorkspace(LEGACY_WORKSPACE_HIDDEN_SKILLS_DIR, resolvedWorkspace))
+    );
+  } catch {
+    // Ignore invalid hidden legacy skills root.
+  }
+
+  return Array.from(roots);
+}
+
 function resolveSkillPathCandidates(reference: string, workspace: string): string[] {
   const normalized = normalizeSkillReference(reference);
   if (!normalized) return [];
 
-  const globalWorkspace = getGlobalWorkspaceRoot();
+  const resolvedWorkspace = path.resolve(workspace);
   const globalSkillsRoot = getGlobalSkillsRoot();
+  const allowedRoots = getAllowedSkillRoots(resolvedWorkspace);
   const candidates = new Set<string>();
 
   const addCandidate = (candidatePath: string) => {
-    candidates.add(path.resolve(candidatePath));
+    const resolved = path.resolve(candidatePath);
+    if (!isPathWithinAnyRoot(resolved, allowedRoots)) {
+      return;
+    }
+    candidates.add(resolved);
   };
 
   if (path.isAbsolute(normalized)) {
     addCandidate(normalized);
   } else {
-    try {
-      addCandidate(normalizePathForWorkspace(normalized, globalWorkspace));
-    } catch {
-      // Ignore invalid global-workspace-relative path.
-    }
-
     const asGlobalRelative = normalized
       .replace(/^\.sorcerer\/skills\//, "")
       .replace(/^skills\//, "");
@@ -238,7 +285,7 @@ function resolveSkillPathCandidates(reference: string, workspace: string): strin
     }
 
     try {
-      addCandidate(normalizePathForWorkspace(normalized, workspace));
+      addCandidate(normalizePathForWorkspace(normalized, resolvedWorkspace));
     } catch {
       // Ignore invalid workspace-relative path.
     }
@@ -246,7 +293,7 @@ function resolveSkillPathCandidates(reference: string, workspace: string): strin
     try {
       const legacyWorkspaceSkillsRoot = normalizePathForWorkspace(
         LEGACY_WORKSPACE_SKILLS_DIR,
-        workspace
+        resolvedWorkspace
       );
       const insideLegacyRoot = ensureInsideRoot(
         legacyWorkspaceSkillsRoot,
@@ -262,7 +309,7 @@ function resolveSkillPathCandidates(reference: string, workspace: string): strin
     try {
       const legacyWorkspaceHiddenSkillsRoot = normalizePathForWorkspace(
         LEGACY_WORKSPACE_HIDDEN_SKILLS_DIR,
-        workspace
+        resolvedWorkspace
       );
       const insideLegacyRoot = ensureInsideRoot(
         legacyWorkspaceHiddenSkillsRoot,
@@ -495,7 +542,10 @@ export async function createSkillFromPrompt(params: {
   const title = parseTitleFromMarkdown(content);
   const slug = sanitizeSlug(title);
   const fileName = `${slug}-${Date.now()}.md`;
-  const absolutePath = path.join(root, fileName);
+  const absolutePath = ensureInsideRoot(root, path.join(root, fileName));
+  if (!absolutePath) {
+    throw new Error("Resolved skill path is outside the skills root.");
+  }
   await writeFile(absolutePath, `${content}\n`, "utf-8");
 
   const fileStat = await stat(absolutePath);
@@ -512,6 +562,7 @@ export async function loadSkillDocuments(
   requestedSkillFiles: string[],
   maxSkills: number = 10
 ): Promise<SkillDocument[]> {
+  const allowedRoots = getAllowedSkillRoots(workspace);
   const normalized = requestedSkillFiles
     .map((value) => normalizeSkillReference(value))
     .filter(Boolean)
@@ -526,6 +577,9 @@ export async function loadSkillDocuments(
 
     for (const candidate of candidates) {
       try {
+        if (!isPathWithinAnyRoot(candidate, allowedRoots)) {
+          continue;
+        }
         const content = await readFile(candidate, "utf-8");
         const trimmed = truncate(content.trim(), MAX_SKILL_CONTENT_CHARS);
         const pathMatch = buildPathMatch(candidate, workspace);

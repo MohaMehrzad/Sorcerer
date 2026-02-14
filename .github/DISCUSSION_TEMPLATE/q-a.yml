@@ -1,0 +1,32 @@
+title: Question
+body:
+  - type: textarea
+    id: question
+    attributes:
+      label: Your question
+      description: What are you trying to achieve?
+      placeholder: Ask your question clearly.
+    validations:
+      required: true
+  - type: textarea
+    id: repro
+    attributes:
+      label: Repro details
+      description: Commands, logs, config, or minimal example.
+      placeholder: Include enough detail for someone to reproduce.
+    validations:
+      required: true
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      options:
+        - setup
+        - orchestration
+        - memory
+        - verification
+        - UI
+        - deployment
+        - other
+    validations:
+      required: true

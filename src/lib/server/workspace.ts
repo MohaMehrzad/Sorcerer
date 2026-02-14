@@ -93,6 +93,18 @@ function isPathAllowedByRoots(candidate: string, roots: string[]): boolean {
   return roots.some((root) => isPathWithinRoot(candidate, root));
 }
 
+export function assertPathWithinWorkspace(
+  absolutePath: string,
+  workspace: string
+): string {
+  const resolvedWorkspace = path.resolve(workspace);
+  const resolvedPath = path.resolve(absolutePath);
+  if (!isPathWithinRoot(resolvedPath, resolvedWorkspace)) {
+    throw new Error("Path must stay within the selected workspace");
+  }
+  return resolvedPath;
+}
+
 export async function approveWorkspacePath(input: string): Promise<string> {
   const defaultWorkspace = getDefaultWorkspacePath();
   const normalizedInput = input.trim();
@@ -146,6 +158,22 @@ export async function resolveWorkspacePath(input?: string): Promise<string> {
       : path.resolve(defaultWorkspace, raw)
     : defaultWorkspace;
 
+  const inDefaultWorkspace = isPathWithinRoot(candidate, defaultWorkspace);
+  if (!inDefaultWorkspace) {
+    const allowedRoots = parseWorkspaceAllowedRoots();
+    const approvedRoots = await loadApprovedWorkspaceRoots();
+
+    const isAllowed =
+      isPathAllowedByRoots(candidate, allowedRoots) ||
+      isPathAllowedByRoots(candidate, approvedRoots);
+    if (!isAllowed) {
+      throw new WorkspaceAccessError(
+        `Workspace path is outside the allowed scope: ${candidate}. Use the workspace picker to approve it or configure WORKSPACE_ALLOWED_ROOTS.`,
+        403
+      );
+    }
+  }
+
   let workspaceStat;
   try {
     workspaceStat = await stat(candidate);
@@ -160,24 +188,7 @@ export async function resolveWorkspacePath(input?: string): Promise<string> {
     throw new WorkspaceAccessError(`Workspace path must be a directory: ${candidate}`, 400);
   }
 
-  if (isPathWithinRoot(candidate, defaultWorkspace)) {
-    return candidate;
-  }
-
-  const allowedRoots = parseWorkspaceAllowedRoots();
-  if (isPathAllowedByRoots(candidate, allowedRoots)) {
-    return candidate;
-  }
-
-  const approvedRoots = await loadApprovedWorkspaceRoots();
-  if (isPathAllowedByRoots(candidate, approvedRoots)) {
-    return candidate;
-  }
-
-  throw new WorkspaceAccessError(
-    `Workspace path is outside the allowed scope: ${candidate}. Use the workspace picker to approve it or configure WORKSPACE_ALLOWED_ROOTS.`,
-    403
-  );
+  return candidate;
 }
 
 export function normalizePathForWorkspace(inputPath: string, workspace: string): string {
@@ -187,12 +198,7 @@ export function normalizePathForWorkspace(inputPath: string, workspace: string):
   }
 
   const resolvedWorkspace = path.resolve(workspace);
-  const resolved = path.resolve(resolvedWorkspace, trimmed);
-  if (resolved !== resolvedWorkspace && !resolved.startsWith(`${resolvedWorkspace}${path.sep}`)) {
-    throw new Error("Path must stay within the selected workspace");
-  }
-
-  return resolved;
+  return assertPathWithinWorkspace(path.resolve(resolvedWorkspace, trimmed), resolvedWorkspace);
 }
 
 export function toRelativeWorkspacePath(absolutePath: string, workspace: string): string {

@@ -1,0 +1,18 @@
+title: Announcement
+body:
+  - type: textarea
+    id: summary
+    attributes:
+      label: Update summary
+      description: What changed and why it matters.
+      placeholder: Share the key change in plain language.
+    validations:
+      required: true
+  - type: textarea
+    id: details
+    attributes:
+      label: Details
+      description: Release notes, migration notes, or action items.
+      placeholder: Include links and next steps.
+    validations:
+      required: true
