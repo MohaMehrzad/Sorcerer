@@ -199,6 +199,34 @@ function getStorePath(workspace: string): string {
   );
 }
 
+const workspaceMutationQueues = new Map<string, Promise<void>>();
+
+async function withWorkspaceStoreLock<T>(
+  workspace: string,
+  operation: () => Promise<T>
+): Promise<T> {
+  const key = path.resolve(workspace);
+  const previous = workspaceMutationQueues.get(key) || Promise.resolve();
+  const ready = previous.catch(() => {});
+
+  let release: () => void = () => {};
+  const current = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const chained = ready.then(() => current);
+  workspaceMutationQueues.set(key, chained);
+
+  await ready;
+  try {
+    return await operation();
+  } finally {
+    release();
+    if (workspaceMutationQueues.get(key) === chained) {
+      workspaceMutationQueues.delete(key);
+    }
+  }
+}
+
 function hashText(value: string): string {
   return createHash("sha256").update(value).digest("hex");
 }
@@ -652,17 +680,19 @@ export async function listMemoryEntries(workspace: string): Promise<{
   entries: LongTermMemoryEntry[];
   latestContinuation?: ContinuationPacket;
 }> {
-  const store = await loadStore(workspace);
-  const entries = [...store.entries].sort((first, second) => {
-    if (first.pinned !== second.pinned) return first.pinned ? -1 : 1;
-    const firstTime = Date.parse(first.updatedAt);
-    const secondTime = Date.parse(second.updatedAt);
-    return secondTime - firstTime;
+  return withWorkspaceStoreLock(workspace, async () => {
+    const store = await loadStore(workspace);
+    const entries = [...store.entries].sort((first, second) => {
+      if (first.pinned !== second.pinned) return first.pinned ? -1 : 1;
+      const firstTime = Date.parse(first.updatedAt);
+      const secondTime = Date.parse(second.updatedAt);
+      return secondTime - firstTime;
+    });
+    return {
+      entries,
+      latestContinuation: store.latestContinuation,
+    };
   });
-  return {
-    entries,
-    latestContinuation: store.latestContinuation,
-  };
 }
 
 export async function retrieveMemoryContext(
@@ -673,76 +703,78 @@ export async function retrieveMemoryContext(
   diagnostics: MemoryRetrievalDiagnostics;
   latestContinuation?: ContinuationPacket;
 }> {
-  const store = await loadStore(params.workspace);
-  const queryTokens = new Set(tokenize(params.query));
-  const nowMs = Date.now();
-  const limit = clamp(params.limit ?? DEFAULT_LIMIT, 1, 30);
-  const maxChars = clamp(params.maxChars ?? DEFAULT_MAX_CONTEXT_CHARS, 300, 12000);
-  const allowedTypes = params.types ? new Set(params.types) : null;
+  return withWorkspaceStoreLock(params.workspace, async () => {
+    const store = await loadStore(params.workspace);
+    const queryTokens = new Set(tokenize(params.query));
+    const nowMs = Date.now();
+    const limit = clamp(params.limit ?? DEFAULT_LIMIT, 1, 30);
+    const maxChars = clamp(params.maxChars ?? DEFAULT_MAX_CONTEXT_CHARS, 300, 12000);
+    const allowedTypes = params.types ? new Set(params.types) : null;
 
-  const scored: RetrievedMemoryEntry[] = store.entries
-    .filter((entry) => {
-      if (!params.includePinned && entry.pinned) return false;
-      if (allowedTypes && !allowedTypes.has(entry.type)) return false;
-      if (entry.invalidatedAt) return false;
-      if (entry.tags.includes("dry_run") && !entry.pinned) return false;
-      if (!entry.pinned && entry.confidenceScore < minimumConfidenceForType(entry.type)) {
-        return false;
-      }
-      return true;
-    })
-    .map((entry) => ({
-      entry,
-      score: scoreMemoryEntry(entry, queryTokens, nowMs),
-    }))
-    .sort((first, second) => second.score - first.score)
-    .slice(0, Math.max(limit * 3, 20));
+    const scored: RetrievedMemoryEntry[] = store.entries
+      .filter((entry) => {
+        if (!params.includePinned && entry.pinned) return false;
+        if (allowedTypes && !allowedTypes.has(entry.type)) return false;
+        if (entry.invalidatedAt) return false;
+        if (entry.tags.includes("dry_run") && !entry.pinned) return false;
+        if (!entry.pinned && entry.confidenceScore < minimumConfidenceForType(entry.type)) {
+          return false;
+        }
+        return true;
+      })
+      .map((entry) => ({
+        entry,
+        score: scoreMemoryEntry(entry, queryTokens, nowMs),
+      }))
+      .sort((first, second) => second.score - first.score)
+      .slice(0, Math.max(limit * 3, 20));
 
-  const selected: RetrievedMemoryEntry[] = [];
-  let usedChars = 0;
-  for (const item of scored) {
-    if (selected.length >= limit) break;
-    const line = entryToContextLine(item.entry);
-    if (usedChars + line.length > maxChars && selected.length > 0) break;
-    selected.push(item);
-    usedChars += line.length + 1;
-  }
+    const selected: RetrievedMemoryEntry[] = [];
+    let usedChars = 0;
+    for (const item of scored) {
+      if (selected.length >= limit) break;
+      const line = entryToContextLine(item.entry);
+      if (usedChars + line.length > maxChars && selected.length > 0) break;
+      selected.push(item);
+      usedChars += line.length + 1;
+    }
 
-  const diagnostics = buildDiagnostics(selected);
-  const conflictLines =
-    diagnostics.conflicts.length > 0
-      ? [
-          "Memory conflicts detected:",
-          ...diagnostics.conflicts.slice(0, 6).map((conflict, index) => {
-            return `${index + 1}. ${conflict.reason} topic=${conflict.topicTokens.join(",") || "(unspecified)"} entries=${conflict.firstEntryId} vs ${conflict.secondEntryId}`;
-          }),
-          ...diagnostics.guidance.map((line) => `- ${line}`),
-        ]
-      : [];
+    const diagnostics = buildDiagnostics(selected);
+    const conflictLines =
+      diagnostics.conflicts.length > 0
+        ? [
+            "Memory conflicts detected:",
+            ...diagnostics.conflicts.slice(0, 6).map((conflict, index) => {
+              return `${index + 1}. ${conflict.reason} topic=${conflict.topicTokens.join(",") || "(unspecified)"} entries=${conflict.firstEntryId} vs ${conflict.secondEntryId}`;
+            }),
+            ...diagnostics.guidance.map((line) => `- ${line}`),
+          ]
+        : [];
 
-  const selectedIds = new Set(selected.map((item) => item.entry.id));
-  let storeChanged = false;
-  for (const entry of store.entries) {
-    if (!selectedIds.has(entry.id)) continue;
-    entry.useCount += 1;
-    entry.lastUsedAt = nowIso();
-    storeChanged = true;
-  }
-  if (storeChanged) {
-    await saveStore(params.workspace, store);
-  }
+    const selectedIds = new Set(selected.map((item) => item.entry.id));
+    let storeChanged = false;
+    for (const entry of store.entries) {
+      if (!selectedIds.has(entry.id)) continue;
+      entry.useCount += 1;
+      entry.lastUsedAt = nowIso();
+      storeChanged = true;
+    }
+    if (storeChanged) {
+      await saveStore(params.workspace, store);
+    }
 
-  return {
-    entries: selected,
-    contextBlock:
-      selected.length > 0
-        ? [selected.map((item) => entryToContextLine(item.entry)).join("\n"), ...conflictLines]
-            .filter(Boolean)
-            .join("\n")
-        : "(no prior long-term memory retrieved)",
-    diagnostics,
-    latestContinuation: store.latestContinuation,
-  };
+    return {
+      entries: selected,
+      contextBlock:
+        selected.length > 0
+          ? [selected.map((item) => entryToContextLine(item.entry)).join("\n"), ...conflictLines]
+              .filter(Boolean)
+              .join("\n")
+          : "(no prior long-term memory retrieved)",
+      diagnostics,
+      latestContinuation: store.latestContinuation,
+    };
+  });
 }
 
 function mergeSuccessScore(previous: number, incoming: number): number {
@@ -780,119 +812,120 @@ export async function addMemoryEntries(
   if (!Array.isArray(entriesInput) || entriesInput.length === 0) {
     return { added: 0, updated: 0 };
   }
-
-  const store = await loadStore(workspace);
-  const byDedupe = new Map<string, LongTermMemoryEntry>();
-  for (const entry of store.entries) {
-    byDedupe.set(entry.dedupeKey, entry);
-  }
-
-  let added = 0;
-  let updated = 0;
-
-  for (const input of entriesInput) {
-    const type = input.type;
-    if (
-      type !== "bug_pattern" &&
-      type !== "fix_pattern" &&
-      type !== "verification_rule" &&
-      type !== "project_convention" &&
-      type !== "continuation"
-    ) {
-      continue;
-    }
-    const title = input.title.trim();
-    const content = input.content.trim();
-    if (!title || !content) continue;
-
-    const dedupeKey = createDedupeKey({
-      workspace,
-      type,
-      title,
-      content,
-    });
-    const existing = byDedupe.get(dedupeKey);
-    const score = clamp(input.successScore ?? 0.6, 0, 1);
-    const confidenceScore = clamp(input.confidenceScore ?? score, 0, 1);
-    const timestamp = nowIso();
-    const normalizedEvidence = normalizeEvidence(input.evidence);
-    const normalizedSupersedes = normalizeRelationIds(input.supersedes);
-    const normalizedContradictedBy = normalizeRelationIds(input.contradictedBy);
-    const normalizedLastValidatedAt =
-      typeof input.lastValidatedAt === "string" && input.lastValidatedAt.trim().length > 0
-        ? input.lastValidatedAt
-        : undefined;
-    const normalizedInvalidatedAt =
-      typeof input.invalidatedAt === "string" && input.invalidatedAt.trim().length > 0
-        ? input.invalidatedAt
-        : undefined;
-
-    if (existing) {
-      existing.updatedAt = timestamp;
-      existing.successScore = mergeSuccessScore(existing.successScore, score);
-      existing.confidenceScore = mergeConfidenceScore(
-        existing.confidenceScore,
-        confidenceScore
-      );
-      existing.pinned = existing.pinned || Boolean(input.pinned);
-      existing.tags = Array.from(new Set([...existing.tags, ...normalizeTags(input.tags)]))
-        .slice(0, MAX_TAGS_PER_ENTRY);
-      existing.evidence = mergeEvidence(existing.evidence, normalizedEvidence);
-      existing.supersedes = mergeRelationIds(existing.supersedes, normalizedSupersedes);
-      existing.contradictedBy = mergeRelationIds(
-        existing.contradictedBy,
-        normalizedContradictedBy
-      );
-      if (normalizedLastValidatedAt) {
-        existing.lastValidatedAt = normalizedLastValidatedAt;
-      } else if (existing.evidence.length > 0 && !existing.lastValidatedAt) {
-        existing.lastValidatedAt = timestamp;
-      }
-      if (normalizedInvalidatedAt) {
-        existing.invalidatedAt = normalizedInvalidatedAt;
-      }
-      if (input.sourceRunId) existing.sourceRunId = input.sourceRunId;
-      if (input.sourceGoal) existing.sourceGoal = input.sourceGoal;
-      markSupersededEntries(store, normalizedSupersedes, existing.id);
-      updated += 1;
-      continue;
+  return withWorkspaceStoreLock(workspace, async () => {
+    const store = await loadStore(workspace);
+    const byDedupe = new Map<string, LongTermMemoryEntry>();
+    for (const entry of store.entries) {
+      byDedupe.set(entry.dedupeKey, entry);
     }
 
-    const entry: LongTermMemoryEntry = {
-      id: randomUUID(),
-      workspace,
-      type,
-      title: title.slice(0, MAX_ENTRY_TITLE_CHARS),
-      content: content.slice(0, MAX_ENTRY_CONTENT_CHARS),
-      tags: normalizeTags(input.tags),
-      pinned: Boolean(input.pinned),
-      successScore: score,
-      confidenceScore,
-      evidence: normalizedEvidence,
-      useCount: 0,
-      createdAt: timestamp,
-      updatedAt: timestamp,
-      lastValidatedAt:
-        normalizedLastValidatedAt || (normalizedEvidence.length > 0 ? timestamp : undefined),
-      invalidatedAt: normalizedInvalidatedAt,
-      supersedes: normalizedSupersedes,
-      contradictedBy: normalizedContradictedBy,
-      sourceRunId: input.sourceRunId,
-      sourceGoal: input.sourceGoal,
-      dedupeKey,
-    };
+    let added = 0;
+    let updated = 0;
 
-    store.entries.push(entry);
-    byDedupe.set(dedupeKey, entry);
-    markSupersededEntries(store, normalizedSupersedes, entry.id);
-    added += 1;
-  }
+    for (const input of entriesInput) {
+      const type = input.type;
+      if (
+        type !== "bug_pattern" &&
+        type !== "fix_pattern" &&
+        type !== "verification_rule" &&
+        type !== "project_convention" &&
+        type !== "continuation"
+      ) {
+        continue;
+      }
+      const title = input.title.trim();
+      const content = input.content.trim();
+      if (!title || !content) continue;
 
-  if (added > 0 || updated > 0) {
-    await saveStore(workspace, store);
-  }
+      const dedupeKey = createDedupeKey({
+        workspace,
+        type,
+        title,
+        content,
+      });
+      const existing = byDedupe.get(dedupeKey);
+      const score = clamp(input.successScore ?? 0.6, 0, 1);
+      const confidenceScore = clamp(input.confidenceScore ?? score, 0, 1);
+      const timestamp = nowIso();
+      const normalizedEvidence = normalizeEvidence(input.evidence);
+      const normalizedSupersedes = normalizeRelationIds(input.supersedes);
+      const normalizedContradictedBy = normalizeRelationIds(input.contradictedBy);
+      const normalizedLastValidatedAt =
+        typeof input.lastValidatedAt === "string" && input.lastValidatedAt.trim().length > 0
+          ? input.lastValidatedAt
+          : undefined;
+      const normalizedInvalidatedAt =
+        typeof input.invalidatedAt === "string" && input.invalidatedAt.trim().length > 0
+          ? input.invalidatedAt
+          : undefined;
 
-  return { added, updated };
+      if (existing) {
+        existing.updatedAt = timestamp;
+        existing.successScore = mergeSuccessScore(existing.successScore, score);
+        existing.confidenceScore = mergeConfidenceScore(
+          existing.confidenceScore,
+          confidenceScore
+        );
+        existing.pinned = existing.pinned || Boolean(input.pinned);
+        existing.tags = Array.from(new Set([...existing.tags, ...normalizeTags(input.tags)]))
+          .slice(0, MAX_TAGS_PER_ENTRY);
+        existing.evidence = mergeEvidence(existing.evidence, normalizedEvidence);
+        existing.supersedes = mergeRelationIds(existing.supersedes, normalizedSupersedes);
+        existing.contradictedBy = mergeRelationIds(
+          existing.contradictedBy,
+          normalizedContradictedBy
+        );
+        if (normalizedLastValidatedAt) {
+          existing.lastValidatedAt = normalizedLastValidatedAt;
+        } else if (existing.evidence.length > 0 && !existing.lastValidatedAt) {
+          existing.lastValidatedAt = timestamp;
+        }
+        if (normalizedInvalidatedAt) {
+          existing.invalidatedAt = normalizedInvalidatedAt;
+        }
+        if (input.sourceRunId) existing.sourceRunId = input.sourceRunId;
+        if (input.sourceGoal) existing.sourceGoal = input.sourceGoal;
+        markSupersededEntries(store, normalizedSupersedes, existing.id);
+        updated += 1;
+        continue;
+      }
+
+      const entry: LongTermMemoryEntry = {
+        id: randomUUID(),
+        workspace,
+        type,
+        title: title.slice(0, MAX_ENTRY_TITLE_CHARS),
+        content: content.slice(0, MAX_ENTRY_CONTENT_CHARS),
+        tags: normalizeTags(input.tags),
+        pinned: Boolean(input.pinned),
+        successScore: score,
+        confidenceScore,
+        evidence: normalizedEvidence,
+        useCount: 0,
+        createdAt: timestamp,
+        updatedAt: timestamp,
+        lastValidatedAt:
+          normalizedLastValidatedAt || (normalizedEvidence.length > 0 ? timestamp : undefined),
+        invalidatedAt: normalizedInvalidatedAt,
+        supersedes: normalizedSupersedes,
+        contradictedBy: normalizedContradictedBy,
+        sourceRunId: input.sourceRunId,
+        sourceGoal: input.sourceGoal,
+        dedupeKey,
+      };
+
+      store.entries.push(entry);
+      byDedupe.set(dedupeKey, entry);
+      markSupersededEntries(store, normalizedSupersedes, entry.id);
+      added += 1;
+    }
+
+    if (added > 0 || updated > 0) {
+      await saveStore(workspace, store);
+    }
+
+    return { added, updated };
+  });
 }
 
 export async function pinMemoryEntry(
@@ -900,31 +933,35 @@ export async function pinMemoryEntry(
   memoryId: string,
   pinned: boolean
 ): Promise<{ updated: boolean }> {
-  const store = await loadStore(workspace);
-  const target = store.entries.find((entry) => entry.id === memoryId);
-  if (!target) return { updated: false };
-  target.pinned = pinned;
-  target.updatedAt = nowIso();
-  await saveStore(workspace, store);
-  return { updated: true };
+  return withWorkspaceStoreLock(workspace, async () => {
+    const store = await loadStore(workspace);
+    const target = store.entries.find((entry) => entry.id === memoryId);
+    if (!target) return { updated: false };
+    target.pinned = pinned;
+    target.updatedAt = nowIso();
+    await saveStore(workspace, store);
+    return { updated: true };
+  });
 }
 
 export async function forgetMemoryEntry(
   workspace: string,
   memoryId: string
 ): Promise<{ removed: boolean }> {
-  const store = await loadStore(workspace);
-  const nextEntries = store.entries.filter((entry) => entry.id !== memoryId);
-  if (nextEntries.length === store.entries.length) {
-    return { removed: false };
-  }
-  store.entries = nextEntries;
-  await saveStore(workspace, store);
-  return { removed: true };
+  return withWorkspaceStoreLock(workspace, async () => {
+    const store = await loadStore(workspace);
+    const nextEntries = store.entries.filter((entry) => entry.id !== memoryId);
+    if (nextEntries.length === store.entries.length) {
+      return { removed: false };
+    }
+    store.entries = nextEntries;
+    await saveStore(workspace, store);
+    return { removed: true };
+  });
 }
 
 export async function exportMemoryStore(workspace: string): Promise<MemoryStoreData> {
-  return loadStore(workspace);
+  return withWorkspaceStoreLock(workspace, async () => loadStore(workspace));
 }
 
 export async function importMemoryStore(
@@ -942,95 +979,98 @@ export async function importMemoryStore(
         .filter((entry): entry is LongTermMemoryEntry => entry !== null)
     : [];
   const incomingContinuation = sanitizeContinuation(parsed?.latestContinuation);
-
-  if (mode === "replace") {
-    const replacement: MemoryStoreData = {
-      version: STORE_VERSION,
-      updatedAt: nowIso(),
-      entries: incomingEntries.map((entry) => ({
-        ...entry,
-        workspace,
-      })),
-      latestContinuation: incomingContinuation,
-    };
-    await saveStore(workspace, replacement);
-    return {
-      imported: replacement.entries.length,
-      replaced: true,
-    };
-  }
-
-  const store = await loadStore(workspace);
-  const byDedupe = new Map<string, LongTermMemoryEntry>();
-  for (const entry of store.entries) {
-    byDedupe.set(entry.dedupeKey, entry);
-  }
-
-  let imported = 0;
-  for (const incoming of incomingEntries) {
-    const normalized: LongTermMemoryEntry = {
-      ...incoming,
-      workspace,
-      dedupeKey:
-        incoming.dedupeKey ||
-        createDedupeKey({
+  return withWorkspaceStoreLock(workspace, async () => {
+    if (mode === "replace") {
+      const replacement: MemoryStoreData = {
+        version: STORE_VERSION,
+        updatedAt: nowIso(),
+        entries: incomingEntries.map((entry) => ({
+          ...entry,
           workspace,
-          type: incoming.type,
-          title: incoming.title,
-          content: incoming.content,
-        }),
-    };
-    const existing = byDedupe.get(normalized.dedupeKey);
-    if (existing) {
-      existing.updatedAt = nowIso();
-      existing.successScore = mergeSuccessScore(existing.successScore, normalized.successScore);
-      existing.confidenceScore = mergeConfidenceScore(
-        existing.confidenceScore,
-        normalized.confidenceScore
-      );
-      existing.tags = Array.from(new Set([...existing.tags, ...normalized.tags])).slice(
-        0,
-        MAX_TAGS_PER_ENTRY
-      );
-      existing.pinned = existing.pinned || normalized.pinned;
-      existing.evidence = mergeEvidence(existing.evidence, normalized.evidence);
-      existing.supersedes = mergeRelationIds(existing.supersedes, normalized.supersedes);
-      existing.contradictedBy = mergeRelationIds(
-        existing.contradictedBy,
-        normalized.contradictedBy
-      );
-      if (normalized.lastValidatedAt) {
-        existing.lastValidatedAt = normalized.lastValidatedAt;
-      }
-      if (normalized.invalidatedAt) {
-        existing.invalidatedAt = normalized.invalidatedAt;
-      }
-      markSupersededEntries(store, normalized.supersedes, existing.id);
-      continue;
+        })),
+        latestContinuation: incomingContinuation,
+      };
+      await saveStore(workspace, replacement);
+      return {
+        imported: replacement.entries.length,
+        replaced: true,
+      };
     }
-    store.entries.push(normalized);
-    byDedupe.set(normalized.dedupeKey, normalized);
-    markSupersededEntries(store, normalized.supersedes, normalized.id);
-    imported += 1;
-  }
 
-  if (incomingContinuation) {
-    store.latestContinuation = incomingContinuation;
-  }
-  await saveStore(workspace, store);
-  return {
-    imported,
-    replaced: false,
-  };
+    const store = await loadStore(workspace);
+    const byDedupe = new Map<string, LongTermMemoryEntry>();
+    for (const entry of store.entries) {
+      byDedupe.set(entry.dedupeKey, entry);
+    }
+
+    let imported = 0;
+    for (const incoming of incomingEntries) {
+      const normalized: LongTermMemoryEntry = {
+        ...incoming,
+        workspace,
+        dedupeKey:
+          incoming.dedupeKey ||
+          createDedupeKey({
+            workspace,
+            type: incoming.type,
+            title: incoming.title,
+            content: incoming.content,
+          }),
+      };
+      const existing = byDedupe.get(normalized.dedupeKey);
+      if (existing) {
+        existing.updatedAt = nowIso();
+        existing.successScore = mergeSuccessScore(existing.successScore, normalized.successScore);
+        existing.confidenceScore = mergeConfidenceScore(
+          existing.confidenceScore,
+          normalized.confidenceScore
+        );
+        existing.tags = Array.from(new Set([...existing.tags, ...normalized.tags])).slice(
+          0,
+          MAX_TAGS_PER_ENTRY
+        );
+        existing.pinned = existing.pinned || normalized.pinned;
+        existing.evidence = mergeEvidence(existing.evidence, normalized.evidence);
+        existing.supersedes = mergeRelationIds(existing.supersedes, normalized.supersedes);
+        existing.contradictedBy = mergeRelationIds(
+          existing.contradictedBy,
+          normalized.contradictedBy
+        );
+        if (normalized.lastValidatedAt) {
+          existing.lastValidatedAt = normalized.lastValidatedAt;
+        }
+        if (normalized.invalidatedAt) {
+          existing.invalidatedAt = normalized.invalidatedAt;
+        }
+        markSupersededEntries(store, normalized.supersedes, existing.id);
+        continue;
+      }
+      store.entries.push(normalized);
+      byDedupe.set(normalized.dedupeKey, normalized);
+      markSupersededEntries(store, normalized.supersedes, normalized.id);
+      imported += 1;
+    }
+
+    if (incomingContinuation) {
+      store.latestContinuation = incomingContinuation;
+    }
+    await saveStore(workspace, store);
+    return {
+      imported,
+      replaced: false,
+    };
+  });
 }
 
 export async function saveContinuationPacket(
   workspace: string,
   packet: ContinuationPacket
 ): Promise<void> {
-  const store = await loadStore(workspace);
-  store.latestContinuation = packet;
-  await saveStore(workspace, store);
+  await withWorkspaceStoreLock(workspace, async () => {
+    const store = await loadStore(workspace);
+    store.latestContinuation = packet;
+    await saveStore(workspace, store);
+  });
 
   await addMemoryEntries(workspace, [
     {
@@ -1064,6 +1104,8 @@ export async function saveContinuationPacket(
 export async function getLatestContinuationPacket(
   workspace: string
 ): Promise<ContinuationPacket | undefined> {
-  const store = await loadStore(workspace);
-  return store.latestContinuation;
+  return withWorkspaceStoreLock(workspace, async () => {
+    const store = await loadStore(workspace);
+    return store.latestContinuation;
+  });
 }

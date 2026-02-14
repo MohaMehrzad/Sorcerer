@@ -1,16 +1,18 @@
 import { NextRequest, NextResponse } from "next/server";
-import { execFile, exec } from "child_process";
+import { execFile } from "child_process";
 import { promisify } from "util";
 import { writeFile, unlink, mkdir } from "fs/promises";
 import path from "path";
 import crypto from "crypto";
 import { buildCorsHeaders, enforceApiAccess } from "@/lib/server/accessGuard";
+import { buildRestrictedExecutionEnv } from "@/lib/server/executionEnv";
 
 const execFileAsync = promisify(execFile);
-const execAsync = promisify(exec);
 
 const TIMEOUT = 30000;
 const MAX_OUTPUT = 50000;
+const MAX_CODE_CHARS = 120000;
+const EXECUTION_ENABLE_ENV = "ENABLE_RUNTIME_EXECUTION";
 
 // --- Language configurations ---
 
@@ -24,7 +26,7 @@ interface InterpretedLang {
 interface CompiledLang {
   type: "compiled";
   ext: string;
-  compile: (src: string, out: string) => string;
+  compile: (src: string, out: string) => { cmd: string; args: string[] };
 }
 
 type LangConfig = InterpretedLang | CompiledLang;
@@ -50,42 +52,42 @@ const LANGUAGES: Record<string, LangConfig> = {
   c: {
     type: "compiled",
     ext: ".c",
-    compile: (src, out) => `gcc -o "${out}" "${src}" -lm`,
+    compile: (src, out) => ({ cmd: "gcc", args: ["-o", out, src, "-lm"] }),
   },
   cpp: {
     type: "compiled",
     ext: ".cpp",
-    compile: (src, out) => `g++ -std=c++17 -o "${out}" "${src}"`,
+    compile: (src, out) => ({ cmd: "g++", args: ["-std=c++17", "-o", out, src] }),
   },
   "c++": {
     type: "compiled",
     ext: ".cpp",
-    compile: (src, out) => `g++ -std=c++17 -o "${out}" "${src}"`,
+    compile: (src, out) => ({ cmd: "g++", args: ["-std=c++17", "-o", out, src] }),
   },
   rust: {
     type: "compiled",
     ext: ".rs",
-    compile: (src, out) => `rustc -o "${out}" "${src}"`,
+    compile: (src, out) => ({ cmd: "rustc", args: ["-o", out, src] }),
   },
   rs: {
     type: "compiled",
     ext: ".rs",
-    compile: (src, out) => `rustc -o "${out}" "${src}"`,
+    compile: (src, out) => ({ cmd: "rustc", args: ["-o", out, src] }),
   },
   swift: {
     type: "compiled",
     ext: ".swift",
-    compile: (src, out) => `swiftc -o "${out}" "${src}"`,
+    compile: (src, out) => ({ cmd: "swiftc", args: ["-o", out, src] }),
   },
   java: {
     type: "compiled",
     ext: ".java",
-    compile: () => "", // Java handled specially
+    compile: () => ({ cmd: "javac", args: [] }), // Java handled specially
   },
   go: {
     type: "compiled",
     ext: ".go",
-    compile: (src, out) => `go build -o "${out}" "${src}"`,
+    compile: (src, out) => ({ cmd: "go", args: ["build", "-o", out, src] }),
   },
 };
 
@@ -95,34 +97,19 @@ function truncate(str: string, max: number): string {
 }
 
 function buildExecutionEnv(): NodeJS.ProcessEnv {
-  const allowedKeys = [
-    "PATH",
-    "HOME",
-    "LANG",
-    "LC_ALL",
-    "LC_CTYPE",
-    "TMPDIR",
-    "TMP",
-    "TEMP",
-    "SYSTEMROOT",
-    "WINDIR",
-    "PATHEXT",
-    "ComSpec",
-  ] as const;
+  const inheritedNodeEnv =
+    process.env.NODE_ENV === "test" || process.env.NODE_ENV === "production"
+      ? process.env.NODE_ENV
+      : "production";
+  return buildRestrictedExecutionEnv({
+    nodeEnv: inheritedNodeEnv,
+    additional: { PYTHONUNBUFFERED: "1" },
+  });
+}
 
-  const env: NodeJS.ProcessEnv = {
-    NODE_ENV: process.env.NODE_ENV || "production",
-    PYTHONUNBUFFERED: "1",
-  };
-
-  for (const key of allowedKeys) {
-    const value = process.env[key];
-    if (typeof value === "string" && value.length > 0) {
-      env[key] = value;
-    }
-  }
-
-  return env;
+function isExecutionEnabled(): boolean {
+  const raw = process.env[EXECUTION_ENABLE_ENV];
+  return raw === "1" || raw === "true";
 }
 
 function corsHeaders(req: NextRequest): Record<string, string> {
@@ -178,9 +165,9 @@ async function runCompiled(
     }
 
     // Compile
-    const compileCmd = config.compile(filePath, outPath);
+    const compileCommand = config.compile(filePath, outPath);
     try {
-      await execAsync(compileCmd, {
+      await execFileAsync(compileCommand.cmd, compileCommand.args, {
         timeout: TIMEOUT,
         maxBuffer: MAX_OUTPUT,
         env: buildExecutionEnv(),
@@ -252,7 +239,7 @@ async function runJava(
   try {
     // Compile
     try {
-      await execAsync(`javac "${javaPath}"`, {
+      await execFileAsync("javac", [javaPath], {
         timeout: TIMEOUT,
         maxBuffer: MAX_OUTPUT,
         env: buildExecutionEnv(),
@@ -267,14 +254,11 @@ async function runJava(
 
     // Run
     try {
-      const { stdout, stderr } = await execAsync(
-        `java -cp "${tmpDir}" ${className}`,
-        {
-          timeout: TIMEOUT,
-          maxBuffer: MAX_OUTPUT,
-          env: buildExecutionEnv(),
-        }
-      );
+      const { stdout, stderr } = await execFileAsync("java", ["-cp", tmpDir, className], {
+        timeout: TIMEOUT,
+        maxBuffer: MAX_OUTPUT,
+        env: buildExecutionEnv(),
+      });
       const output = (stdout || "") + (stderr ? stderr : "");
       return {
         output: truncate(output, MAX_OUTPUT) || "(no output)",
@@ -311,6 +295,14 @@ export async function POST(req: NextRequest) {
     methods: "POST, OPTIONS",
   });
   if (denied) return denied;
+  if (!isExecutionEnabled()) {
+    return NextResponse.json(
+      {
+        error: `Runtime code execution is disabled. Set ${EXECUTION_ENABLE_ENV}=1 to opt in.`,
+      },
+      { status: 403, headers: corsHeaders(req) }
+    );
+  }
 
   let body: { code?: string; language?: string };
   try {
@@ -329,6 +321,12 @@ export async function POST(req: NextRequest) {
       { status: 400, headers: corsHeaders(req) }
     );
   }
+  if (code.length > MAX_CODE_CHARS) {
+    return NextResponse.json(
+      { error: `Code payload exceeds limit (${MAX_CODE_CHARS} characters)` },
+      { status: 400, headers: corsHeaders(req) }
+    );
+  }
 
   const lang = (language || "python").toLowerCase();
   const config = LANGUAGES[lang];
@@ -344,7 +342,7 @@ export async function POST(req: NextRequest) {
     );
   }
 
-  const tmpDir = path.join(process.cwd(), ".tmp");
+  const tmpDir = path.join(process.cwd(), ".tmp", "exec");
   const fileId = crypto.randomBytes(8).toString("hex");
   const filePath = path.join(tmpDir, `exec_${fileId}${config.ext}`);
 

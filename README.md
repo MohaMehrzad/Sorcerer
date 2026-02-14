@@ -63,6 +63,7 @@ Key variables:
 - `MODEL_API_URL` (optional)
 - `MODEL_NAME` (optional)
 - `WORKSPACE_DIR` (optional, defaults to repo root)
+- `ENABLE_RUNTIME_EXECUTION` (optional, defaults to disabled; set to `1` only if you explicitly want `/api/execute`)
 
 ## Run Modes
 
@@ -78,7 +79,8 @@ Main controls in UI:
 ## Project Health + Security
 
 - Local command execution + file mutations are guarded by safety policies.
-- Sensitive paths under `.tmp` and secret-like files are blocked from file API writes.
+- Sensitive paths under `.tmp`, hidden internal folders, and secret-like files are blocked from file mutations.
+- `/api/execute` is opt-in and disabled by default unless `ENABLE_RUNTIME_EXECUTION=1` is set.
 - API supports localhost/origin checks and optional auth token.
 
 Read:

@@ -14,7 +14,8 @@
     "start": "APP_ROLE=frontend next start -H 127.0.0.1 -p 7777",
     "start:frontend": "APP_ROLE=frontend next start -H 127.0.0.1 -p 7777",
     "start:backend": "APP_ROLE=backend next start -H 127.0.0.1 -p 7778",
-    "lint": "eslint"
+    "lint": "eslint",
+    "test": "node scripts/test-safety-guards.mjs"
   },
   "dependencies": {
     "next": "16.1.6",

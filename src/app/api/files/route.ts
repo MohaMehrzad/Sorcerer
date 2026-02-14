@@ -9,6 +9,7 @@ import {
   toRelativeWorkspacePath,
 } from "@/lib/server/workspace";
 import { buildCorsHeaders, enforceApiAccess } from "@/lib/server/accessGuard";
+import { validateWorkspaceMutationAbsolutePath } from "@/lib/server/pathPolicy";
 
 // Files/dirs to ignore when scanning
 const IGNORE = new Set([
@@ -37,12 +38,6 @@ const BINARY_EXTENSIONS = new Set([
   ".exe", ".dll", ".so", ".dylib",
   ".pyc", ".class", ".o",
 ]);
-
-const PROTECTED_WORKSPACE_PATH_PATTERNS: RegExp[] = [
-  /^\.tmp\/approved-workspaces\.json$/,
-  /^\.tmp\/agent-runs(?:\/|$)/,
-  /^\.tmp\/agent-memory(?:\/|$)/,
-];
 
 class FileRouteError extends Error {
   status: number;
@@ -140,12 +135,10 @@ function toWorkspaceRelativePath(filePath: string, workspace: string): string {
 
 function assertAllowedFileRoutePath(filePath: string, workspace: string, action: string): void {
   const relativePath = toWorkspaceRelativePath(filePath, workspace);
-  const isProtected = PROTECTED_WORKSPACE_PATH_PATTERNS.some((pattern) =>
-    pattern.test(relativePath)
-  );
-  if (isProtected) {
+  const check = validateWorkspaceMutationAbsolutePath(filePath, workspace);
+  if (!check.ok) {
     throw new FileRouteError(
-      `Path is protected and cannot be used with /api/files ${action}: ${relativePath}`,
+      `Path is protected and cannot be used with /api/files ${action}: ${relativePath}. ${check.reason || "Unsafe target path."}`,
       403
     );
   }

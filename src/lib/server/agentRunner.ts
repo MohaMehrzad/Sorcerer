@@ -32,6 +32,8 @@ import {
   buildLanguageGuidanceBlock,
   resolveDefaultVerificationCommands,
 } from "@/lib/server/verificationPlanner";
+import { buildRestrictedExecutionEnv } from "@/lib/server/executionEnv";
+import { validateWorkspaceMutationAbsolutePath } from "@/lib/server/pathPolicy";
 
 const execFileAsync = promisify(execFile);
 
@@ -2183,12 +2185,20 @@ async function toolReadManyFiles(
   };
 }
 
+function assertAllowedMutationPath(absolutePath: string, workspace: string): void {
+  const check = validateWorkspaceMutationAbsolutePath(absolutePath, workspace);
+  if (!check.ok) {
+    throw new Error(`Write denied by safety policy: ${check.reason || "Unsafe target path"}`);
+  }
+}
+
 async function toolWriteFile(
   filePath: string,
   content: string,
   context: ToolContext
 ): Promise<ToolResult> {
   const absolute = normalizePathForWorkspace(filePath, context.workspace);
+  assertAllowedMutationPath(absolute, context.workspace);
   const budgetNotice =
     context.fileWriteCount >= context.adaptiveBudget.maxFileWrites
       ? expandAdaptiveBudget(context, "file")
@@ -2247,6 +2257,7 @@ async function toolAppendFile(
   context: ToolContext
 ): Promise<ToolResult> {
   const absolute = normalizePathForWorkspace(filePath, context.workspace);
+  assertAllowedMutationPath(absolute, context.workspace);
   const budgetNotice =
     context.fileWriteCount >= context.adaptiveBudget.maxFileWrites
       ? expandAdaptiveBudget(context, "file")
@@ -2301,6 +2312,7 @@ async function toolAppendFile(
 
 async function toolDeleteFile(filePath: string, context: ToolContext): Promise<ToolResult> {
   const absolute = normalizePathForWorkspace(filePath, context.workspace);
+  assertAllowedMutationPath(absolute, context.workspace);
   const budgetNotice =
     context.fileWriteCount >= context.adaptiveBudget.maxFileWrites
       ? expandAdaptiveBudget(context, "file")
@@ -2467,16 +2479,9 @@ async function runCommand(
 
   // The API runs inside `next dev`, so inherited NODE_ENV=development breaks `next build`.
   const inheritedNodeEnv = process.env.NODE_ENV;
-  const commandNodeEnv =
-    inheritedNodeEnv && ["production", "test"].includes(inheritedNodeEnv)
-      ? inheritedNodeEnv
-      : "production";
-  const commandEnv: NodeJS.ProcessEnv = {
-    ...process.env,
-    NODE_ENV: commandNodeEnv,
-    CI: "1",
-    FORCE_COLOR: "0",
-  };
+  const commandNodeEnv: "production" | "test" =
+    inheritedNodeEnv === "test" ? "test" : "production";
+  const commandEnv = buildRestrictedExecutionEnv({ nodeEnv: commandNodeEnv });
 
   try {
     const { stdout, stderr } = await execFileAsync(

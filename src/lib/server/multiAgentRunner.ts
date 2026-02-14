@@ -30,6 +30,11 @@ import {
   buildLanguageGuidanceBlock,
   resolveDefaultVerificationCommands,
 } from "@/lib/server/verificationPlanner";
+import { buildRestrictedExecutionEnv } from "@/lib/server/executionEnv";
+import {
+  normalizeWorkspaceRelativePath,
+  validateWorkspaceMutationPath,
+} from "@/lib/server/pathPolicy";
 import type {
   AgentAction,
   AgentCommand,
@@ -163,25 +168,6 @@ const MAINTENANCE_ROLE_PROGRAMS = new Set([
   "php",
   "bundle",
   "tsc",
-]);
-
-const SAFE_DENYLIST_PATTERNS: Array<{ pattern: RegExp; reason: string }> = [
-  { pattern: /^\.git\//, reason: "Git internals are read-only." },
-  { pattern: /^\.ssh\//, reason: "SSH material is protected." },
-  { pattern: /(^|\/)\.env(\.|$)/, reason: "Environment secrets are protected." },
-  { pattern: /(^|\/)id_rsa(\.pub)?$/, reason: "Private key material is protected." },
-  { pattern: /(^|\/).*\.pem$/, reason: "Certificate/private key material is protected." },
-  { pattern: /(^|\/).*\.key$/, reason: "Private key material is protected." },
-  { pattern: /(^|\/)secrets?\//, reason: "Secret directories are protected." },
-  { pattern: /^\.tmp\/agent-runs\//, reason: "Internal runtime state is protected." },
-];
-
-const DANGEROUS_SEGMENTS = new Set([
-  "..",
-  ".git",
-  ".ssh",
-  ".aws",
-  ".gnupg",
 ]);
 
 type VerificationMode = "unit" | "final" | "preflight";
@@ -837,41 +823,6 @@ function modelForRole(
   };
 }
 
-function safeRelativePath(input: string): string {
-  return input.replace(/\\/g, "/").replace(/^\/+/, "").trim();
-}
-
-function validateSafeWritePath(relativePath: string): { ok: boolean; reason?: string } {
-  if (!relativePath || relativePath.length > 260) {
-    return { ok: false, reason: "Path is empty or too long." };
-  }
-
-  if (/[\u0000-\u001F]/.test(relativePath)) {
-    return { ok: false, reason: "Path contains control characters." };
-  }
-
-  const segments = relativePath.split("/").filter(Boolean);
-  for (const segment of segments) {
-    if (DANGEROUS_SEGMENTS.has(segment)) {
-      return { ok: false, reason: `Denied unsafe path segment '${segment}'.` };
-    }
-    if (segment.startsWith(".") && segment !== ".github") {
-      return {
-        ok: false,
-        reason: `Denied hidden path segment '${segment}'.`,
-      };
-    }
-  }
-
-  for (const rule of SAFE_DENYLIST_PATTERNS) {
-    if (rule.pattern.test(relativePath)) {
-      return { ok: false, reason: `Denied by safety policy: ${rule.reason}` };
-    }
-  }
-
-  return { ok: true };
-}
-
 function detectDependencyCycle(units: WorkUnit[]): string[] | null {
   const byId = new Map(units.map((unit) => [unit.id, unit]));
   const visiting = new Set<string>();
@@ -1298,16 +1249,9 @@ async function runCommand(
 
   // The API runs inside `next dev`, so inherited NODE_ENV=development breaks `next build`.
   const inheritedNodeEnv = process.env.NODE_ENV;
-  const commandNodeEnv =
-    inheritedNodeEnv && ["production", "test"].includes(inheritedNodeEnv)
-      ? inheritedNodeEnv
-      : "production";
-  const commandEnv: NodeJS.ProcessEnv = {
-    ...process.env,
-    NODE_ENV: commandNodeEnv,
-    CI: "1",
-    FORCE_COLOR: "0",
-  };
+  const commandNodeEnv: "production" | "test" =
+    inheritedNodeEnv === "test" ? "test" : "production";
+  const commandEnv = buildRestrictedExecutionEnv({ nodeEnv: commandNodeEnv });
 
   const startedAt = Date.now();
   try {
@@ -1524,8 +1468,12 @@ async function applyChange(
     };
   }
 
-  const normalizedPath = safeRelativePath(targetPath);
-  const safePathCheck = validateSafeWritePath(normalizedPath);
+  const normalizedPath = normalizeWorkspaceRelativePath(targetPath);
+  const absolutePath = normalizePathForWorkspace(normalizedPath, context.workspace);
+  const relativePath = normalizeWorkspaceRelativePath(
+    toRelativeWorkspacePath(absolutePath, context.workspace)
+  );
+  const safePathCheck = validateWorkspaceMutationPath(relativePath);
   if (!safePathCheck.ok) {
     return {
       ok: false,
@@ -1534,9 +1482,6 @@ async function applyChange(
       action: { type: "final", summary: "unsafe write path denied" },
     };
   }
-
-  const absolutePath = normalizePathForWorkspace(normalizedPath, context.workspace);
-  const relativePath = toRelativeWorkspacePath(absolutePath, context.workspace);
 
   await ensureSnapshot(relativePath, context);
 

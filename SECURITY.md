@@ -24,3 +24,4 @@ You will receive an acknowledgment within 72 hours.
 - CodeQL and Dependabot run continuously through GitHub Actions.
 - Model API URL validation enforces safe protocols and optional host allowlisting (`MODEL_API_ALLOWED_HOSTS`).
 - Browser-side API keys are kept in runtime memory and are not persisted to storage.
+- Runtime code execution endpoint (`/api/execute`) is disabled by default unless `ENABLE_RUNTIME_EXECUTION=1`.
