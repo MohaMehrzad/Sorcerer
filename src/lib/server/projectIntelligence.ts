@@ -2,7 +2,6 @@ import { execFile } from "child_process";
 import { promisify } from "util";
 import { readFile } from "fs/promises";
 import path from "path";
-import { normalizePathForWorkspace } from "@/lib/server/workspace";
 
 const execFileAsync = promisify(execFile);
 
@@ -123,6 +122,7 @@ async function computeHotspots(
   files: string[]
 ): Promise<FileHotspot[]> {
   const hotspots: FileHotspot[] = [];
+  const resolvedWorkspace = path.resolve(workspace);
 
   for (const file of files) {
     const ext = path.extname(file).toLowerCase();
@@ -131,7 +131,13 @@ async function computeHotspots(
     }
 
     try {
-      const safePath = normalizePathForWorkspace(file, workspace);
+      const safePath = path.resolve(resolvedWorkspace, file);
+      if (
+        safePath !== resolvedWorkspace &&
+        !safePath.startsWith(`${resolvedWorkspace}${path.sep}`)
+      ) {
+        continue;
+      }
       const content = await readFile(safePath, "utf-8");
       const lines = content.split("\n").length;
       hotspots.push({ path: file, lines });
@@ -154,6 +160,7 @@ async function buildModuleEdges(
 ): Promise<ModuleEdge[]> {
   const edges: ModuleEdge[] = [];
   const edgeSet = new Set<string>();
+  const resolvedWorkspace = path.resolve(workspace);
 
   const codeFiles = files.filter((file) => {
     const ext = path.extname(file).toLowerCase();
@@ -162,7 +169,13 @@ async function buildModuleEdges(
 
   for (const file of truncateArray(codeFiles, 260)) {
     try {
-      const safePath = normalizePathForWorkspace(file, workspace);
+      const safePath = path.resolve(resolvedWorkspace, file);
+      if (
+        safePath !== resolvedWorkspace &&
+        !safePath.startsWith(`${resolvedWorkspace}${path.sep}`)
+      ) {
+        continue;
+      }
       const content = await readFile(safePath, "utf-8");
 
       const importRegex = /from\s+["']([^"']+)["']/g;
@@ -212,6 +225,7 @@ async function countPatternMatches(
   globs: string[]
 ): Promise<string[]> {
   const args = ["--line-number", "--color", "never", "--no-heading"];
+  const resolvedWorkspace = path.resolve(workspace);
 
   for (const glob of globs) {
     args.push("-g", glob);
@@ -233,12 +247,18 @@ async function countPatternMatches(
         const match = line.match(/^(.*?):(\d+):(.*)$/);
         if (!match) return line;
         const [, filePath, lineNumber, rest] = match;
-        const relativePath = path.relative(workspace, path.resolve(filePath));
+        const absolutePath = path.resolve(filePath);
+        if (
+          absolutePath !== resolvedWorkspace &&
+          !absolutePath.startsWith(`${resolvedWorkspace}${path.sep}`)
+        ) {
+          return null;
+        }
+        const relativePath = path.relative(resolvedWorkspace, absolutePath);
         if (!relativePath || relativePath.startsWith("..") || path.isAbsolute(relativePath)) {
           return null;
         }
-        const safePath = normalizePathForWorkspace(relativePath, workspace);
-        return `${path.relative(workspace, safePath)}:${lineNumber}: ${rest.trim()}`;
+        return `${relativePath}:${lineNumber}: ${rest.trim()}`;
       })
       .filter((line): line is string => Boolean(line));
   } catch {
@@ -299,7 +319,14 @@ export async function collectProjectIntelligence(
 
   let packageScripts: string[] = [];
   try {
-    const packageJsonPath = normalizePathForWorkspace("package.json", workspace);
+    const resolvedWorkspace = path.resolve(workspace);
+    const packageJsonPath = path.resolve(resolvedWorkspace, "package.json");
+    if (
+      packageJsonPath !== resolvedWorkspace &&
+      !packageJsonPath.startsWith(`${resolvedWorkspace}${path.sep}`)
+    ) {
+      throw new Error("package.json path resolved outside workspace");
+    }
     const raw = await readFile(packageJsonPath, "utf-8");
     const parsed = JSON.parse(raw) as { scripts?: Record<string, string> };
     packageScripts = Object.keys(parsed.scripts || {}).sort();
