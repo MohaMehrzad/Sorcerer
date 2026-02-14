@@ -1,39 +1,13 @@
 "use client";
 
-const BOT_PROFILE_KEY = "sorcerer-bot-profile-v1";
-
-interface StoredBotProfile {
-  apiKey?: unknown;
-}
-
-function readStoredApiKey(storage: Storage): string | null {
-  try {
-    const raw = storage.getItem(BOT_PROFILE_KEY);
-    if (!raw) return null;
-    const parsed = JSON.parse(raw) as StoredBotProfile;
-    if (typeof parsed.apiKey !== "string") return null;
-    const token = parsed.apiKey.trim();
-    return token.length > 0 ? token : null;
-  } catch {
-    return null;
-  }
-}
+import { getRuntimeApiKey } from "@/lib/store";
 
 function resolveApiAuthToken(): string | null {
   const explicit = process.env.NEXT_PUBLIC_SORCERER_API_AUTH_TOKEN?.trim();
   if (explicit) return explicit;
 
-  if (typeof window === "undefined") {
-    return null;
-  }
-
-  const sessionToken = readStoredApiKey(window.sessionStorage);
-  if (sessionToken) return sessionToken;
-
-  const localToken = readStoredApiKey(window.localStorage);
-  if (localToken) return localToken;
-
-  return null;
+  const runtimeToken = getRuntimeApiKey().trim();
+  return runtimeToken || null;
 }
 
 function withAuthHeaders(inputHeaders?: HeadersInit): Headers {

@@ -1,6 +1,7 @@
 import { createHash, randomUUID } from "crypto";
 import { mkdir, readFile, writeFile } from "fs/promises";
 import path from "path";
+import { normalizePathForWorkspace } from "@/lib/server/workspace";
 
 export type MemoryEntryType =
   | "bug_pattern"
@@ -192,7 +193,10 @@ const TOKEN_STOPWORDS = new Set([
 ]);
 
 function getStorePath(workspace: string): string {
-  return path.join(workspace, ".tmp", "agent-memory", "memory-store.json");
+  return normalizePathForWorkspace(
+    path.join(".tmp", "agent-memory", "memory-store.json"),
+    workspace
+  );
 }
 
 function hashText(value: string): string {

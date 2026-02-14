@@ -1,0 +1,27 @@
+name: First Interaction
+
+on:
+  issues:
+    types: [opened]
+  pull_request_target:
+    types: [opened]
+
+permissions:
+  issues: write
+  pull-requests: write
+
+jobs:
+  welcome:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Welcome first-time contributors
+        uses: actions/first-interaction@v3
+        with:
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+          issue-message: |
+            Thanks for opening your first issue in Sorcerer.
+            Please include exact reproduction steps, expected behavior, and environment details so maintainers can act quickly.
+          pr-message: |
+            Thanks for your first PR to Sorcerer.
+            Please include verification evidence (`pnpm lint`, `pnpm exec tsc --noEmit`, `pnpm build:all`) so review can move fast.

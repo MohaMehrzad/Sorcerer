@@ -16,6 +16,7 @@ const STORAGE_KEY = "sorcerer-history";
 const BOT_PROFILE_KEY = "sorcerer-bot-profile-v1";
 const BOT_PROFILE_SESSION_API_KEY = "sorcerer-bot-profile-api-key-v1";
 const WORKSPACE_STORAGE_KEY = "sorcerer-workspaces-v1";
+let runtimeApiKey = "";
 
 export interface WorkspaceEntry {
   id: string;
@@ -36,7 +37,7 @@ export interface BotProfile {
   updatedAt: number;
 }
 
-function readSessionApiKey(): string {
+function readLegacySessionApiKey(): string {
   if (typeof window === "undefined") return "";
 
   try {
@@ -55,18 +56,42 @@ function readSessionApiKey(): string {
   }
 }
 
-function saveSessionApiKey(apiKey: string) {
+function clearLegacySessionApiKey(): void {
   if (typeof window === "undefined") return;
-  const trimmed = apiKey.trim();
-  if (!trimmed) {
-    sessionStorage.removeItem(BOT_PROFILE_SESSION_API_KEY);
-    return;
-  }
+  sessionStorage.removeItem(BOT_PROFILE_SESSION_API_KEY);
+}
 
-  sessionStorage.setItem(
-    BOT_PROFILE_SESSION_API_KEY,
-    JSON.stringify({ apiKey: trimmed })
-  );
+function clearLegacyLocalApiKeyField(): void {
+  if (typeof window === "undefined") return;
+
+  try {
+    const raw = localStorage.getItem(BOT_PROFILE_KEY);
+    if (!raw) return;
+    const parsed = JSON.parse(raw) as Record<string, unknown>;
+    if (!("apiKey" in parsed)) return;
+    delete parsed.apiKey;
+    localStorage.setItem(BOT_PROFILE_KEY, JSON.stringify(parsed));
+  } catch {
+    // Best-effort cleanup.
+  }
+}
+
+function setRuntimeApiKey(apiKey: string): void {
+  runtimeApiKey = apiKey.trim();
+  clearLegacySessionApiKey();
+  clearLegacyLocalApiKeyField();
+}
+
+export function getRuntimeApiKey(): string {
+  if (runtimeApiKey) {
+    return runtimeApiKey;
+  }
+  const migrated = readLegacySessionApiKey();
+  if (migrated) {
+    setRuntimeApiKey(migrated);
+    return runtimeApiKey;
+  }
+  return "";
 }
 
 function generateId(): string {
@@ -117,8 +142,7 @@ export function loadBotProfile(): BotProfile | null {
     const botName = typeof parsed.botName === "string" ? parsed.botName.trim() : "";
     const apiUrl = typeof parsed.apiUrl === "string" ? parsed.apiUrl.trim() : "";
     const legacyApiKey = typeof parsed.apiKey === "string" ? parsed.apiKey.trim() : "";
-    const sessionApiKey = readSessionApiKey();
-    const apiKey = sessionApiKey || legacyApiKey;
+    const apiKey = getRuntimeApiKey() || legacyApiKey;
     const model = typeof parsed.model === "string" ? parsed.model.trim() : "";
     const botContext =
       typeof parsed.botContext === "string" ? parsed.botContext.trim() : "";
@@ -131,18 +155,12 @@ export function loadBotProfile(): BotProfile | null {
           .filter(Boolean)
       : [];
 
-    if (legacyApiKey && !sessionApiKey) {
-      saveSessionApiKey(legacyApiKey);
-      try {
-        const redacted = { ...(parsed as Record<string, unknown>) };
-        delete redacted.apiKey;
-        localStorage.setItem(BOT_PROFILE_KEY, JSON.stringify(redacted));
-      } catch {
-        // Best-effort migration only.
-      }
+    if (legacyApiKey) {
+      setRuntimeApiKey(legacyApiKey);
     }
 
-    if (!botName || !apiUrl || !apiKey || !model) {
+    const fallbackToken = process.env.NEXT_PUBLIC_SORCERER_API_AUTH_TOKEN?.trim();
+    if (!botName || !apiUrl || !model || (!apiKey && !fallbackToken)) {
       return null;
     }
 
@@ -168,7 +186,7 @@ export function saveBotProfile(profile: BotProfile) {
   if (typeof window === "undefined") return;
   const { apiKey, ...rest } = profile;
   localStorage.setItem(BOT_PROFILE_KEY, JSON.stringify(rest));
-  saveSessionApiKey(apiKey);
+  setRuntimeApiKey(apiKey);
 }
 
 function deriveWorkspaceName(inputPath: string): string {

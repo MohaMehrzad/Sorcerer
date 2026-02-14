@@ -1,0 +1,31 @@
+title: Feature idea
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem to solve
+      description: What pain point are you trying to solve?
+      placeholder: Describe the current friction.
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed solution
+      description: What should Sorcerer do differently?
+      placeholder: Describe the behavior you want.
+    validations:
+      required: true
+  - type: textarea
+    id: success
+    attributes:
+      label: Success criteria
+      description: How would we know this is valuable?
+      placeholder: Include concrete outcomes or metrics.
+    validations:
+      required: true
+  - type: textarea
+    id: context
+    attributes:
+      label: Extra context
+      description: Links, screenshots, or references.

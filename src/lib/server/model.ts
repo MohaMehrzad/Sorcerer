@@ -47,6 +47,66 @@ const DEFAULT_COMPLETION_BODY_TIMEOUT_MS = 120000;
 const MIN_COMPLETION_BODY_TIMEOUT_MS = 10000;
 const MAX_COMPLETION_BODY_TIMEOUT_MS = 300000;
 const MAX_ERROR_BODY_CHARS = 1800;
+const LOCAL_HOSTNAMES = new Set(["localhost", "127.0.0.1", "::1"]);
+
+function isTruthy(value: string | undefined): boolean {
+  if (!value) return false;
+  const normalized = value.trim().toLowerCase();
+  return normalized === "1" || normalized === "true" || normalized === "yes";
+}
+
+function normalizeHostname(hostname: string): string {
+  return hostname.trim().toLowerCase().replace(/^\[|\]$/g, "");
+}
+
+function isPrivateIpv4(hostname: string): boolean {
+  const match = hostname.match(/^(\d{1,3})(?:\.(\d{1,3})){3}$/);
+  if (!match) return false;
+  const parts = hostname.split(".").map((part) => Number(part));
+  if (parts.some((value) => !Number.isInteger(value) || value < 0 || value > 255)) {
+    return false;
+  }
+
+  const [a, b] = parts;
+  if (a === 10) return true;
+  if (a === 127) return true;
+  if (a === 169 && b === 254) return true;
+  if (a === 172 && b >= 16 && b <= 31) return true;
+  if (a === 192 && b === 168) return true;
+  if (a === 0) return true;
+  return false;
+}
+
+function isPrivateIpv6(hostname: string): boolean {
+  const normalized = hostname.toLowerCase();
+  if (normalized === "::1") return true;
+  if (normalized.startsWith("fc") || normalized.startsWith("fd")) return true;
+  if (
+    normalized.startsWith("fe8") ||
+    normalized.startsWith("fe9") ||
+    normalized.startsWith("fea") ||
+    normalized.startsWith("feb")
+  ) {
+    return true;
+  }
+  return false;
+}
+
+function isPrivateAddress(hostname: string): boolean {
+  return isPrivateIpv4(hostname) || isPrivateIpv6(hostname);
+}
+
+function parseAllowedHosts(): Set<string> {
+  const raw = process.env.MODEL_API_ALLOWED_HOSTS;
+  if (!raw) return new Set();
+
+  return new Set(
+    raw
+      .split(",")
+      .map((host) => normalizeHostname(host))
+      .filter(Boolean)
+  );
+}
 
 function normalizeApiUrl(rawUrl: string): string {
   let parsed: URL;
@@ -63,6 +123,32 @@ function normalizeApiUrl(rawUrl: string): string {
   if (!parsed.hostname) {
     throw new Error("Model API URL must include a hostname");
   }
+
+  if (parsed.username || parsed.password) {
+    throw new Error("Model API URL must not include embedded credentials");
+  }
+
+  const hostname = normalizeHostname(parsed.hostname);
+  const allowPrivateHosts = isTruthy(process.env.MODEL_API_ALLOW_PRIVATE_HOSTS);
+  const allowedHosts = parseAllowedHosts();
+
+  if (parsed.protocol === "http:" && !LOCAL_HOSTNAMES.has(hostname)) {
+    throw new Error("Model API URL over http:// is only allowed for localhost");
+  }
+
+  if (isPrivateAddress(hostname) && !allowPrivateHosts && !LOCAL_HOSTNAMES.has(hostname)) {
+    throw new Error(
+      "Model API URL targets a private network address. Set MODEL_API_ALLOW_PRIVATE_HOSTS=true to allow this explicitly."
+    );
+  }
+
+  if (allowedHosts.size > 0 && !allowedHosts.has(hostname)) {
+    throw new Error(
+      `Model API host "${hostname}" is not in MODEL_API_ALLOWED_HOSTS`
+    );
+  }
+
+  parsed.hash = "";
 
   return parsed.toString();
 }

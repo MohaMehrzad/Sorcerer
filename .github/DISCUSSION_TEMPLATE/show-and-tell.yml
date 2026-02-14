@@ -1,0 +1,23 @@
+title: Show and tell
+body:
+  - type: textarea
+    id: built
+    attributes:
+      label: What you built
+      description: Share what you made with Sorcerer.
+      placeholder: Explain the project briefly.
+    validations:
+      required: true
+  - type: textarea
+    id: workflow
+    attributes:
+      label: Workflow details
+      description: Which prompts, settings, or patterns worked best?
+      placeholder: Include practical tips others can reuse.
+    validations:
+      required: true
+  - type: textarea
+    id: links
+    attributes:
+      label: Links or media
+      description: Repo links, screenshots, demos, or clips.

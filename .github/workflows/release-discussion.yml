@@ -1,0 +1,78 @@
+name: Release Discussion Announcement
+
+on:
+  release:
+    types: [published]
+
+permissions:
+  contents: read
+  discussions: write
+
+jobs:
+  announce:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Publish release announcement to Discussions
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const owner = context.repo.owner;
+            const repo = context.repo.repo;
+            const release = context.payload.release;
+
+            const data = await github.graphql(
+              `query($owner: String!, $repo: String!) {
+                repository(owner: $owner, name: $repo) {
+                  id
+                  discussionCategories(first: 20) {
+                    nodes { id name }
+                  }
+                }
+              }`,
+              { owner, repo }
+            );
+
+            const category = data.repository.discussionCategories.nodes.find(
+              (node) => node.name === "Announcements"
+            );
+
+            if (!category) {
+              core.setFailed("Announcements discussion category was not found.");
+              return;
+            }
+
+            const title = `Release ${release.tag_name}: ${release.name || "Sorcerer update"}`;
+            const body = [
+              `## ${release.name || release.tag_name}`,
+              "",
+              release.body || "_No release notes were provided for this release._",
+              "",
+              `Release link: [${release.tag_name}](${release.html_url})`,
+              `Published at: ${release.published_at}`,
+              "",
+              "Questions and feedback are welcome in this thread."
+            ].join("\n");
+
+            const created = await github.graphql(
+              `mutation($repositoryId: ID!, $categoryId: ID!, $title: String!, $body: String!) {
+                createDiscussion(
+                  input: {
+                    repositoryId: $repositoryId
+                    categoryId: $categoryId
+                    title: $title
+                    body: $body
+                  }
+                ) {
+                  discussion { number url }
+                }
+              }`,
+              {
+                repositoryId: data.repository.id,
+                categoryId: category.id,
+                title,
+                body,
+              }
+            );
+
+            core.info(`Created discussion #${created.createDiscussion.discussion.number}: ${created.createDiscussion.discussion.url}`);
