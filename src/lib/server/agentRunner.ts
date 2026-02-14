@@ -63,6 +63,15 @@ const MAX_SKILL_CONTEXT_PER_FILE_CHARS = 3200;
 const STAGNATION_NO_MUTATION_ITERATIONS = 4;
 const STAGNATION_REPEAT_ACTION_ITERATIONS = 3;
 const MAX_STAGNATION_INTERVENTIONS = 4;
+const MAX_ADAPTIVE_BUDGET_EXPANSIONS = 16;
+const MAX_ADAPTIVE_FILE_WRITES = 400;
+const MAX_ADAPTIVE_COMMAND_RUNS = 640;
+const RESUMABLE_CHECKPOINT_STATUSES = new Set<AgentRunStatus | "in_progress">([
+  "in_progress",
+  "max_iterations",
+  "verification_failed",
+  "failed",
+]);
 
 const IGNORE = new Set([
   "node_modules",
@@ -474,6 +483,12 @@ interface ToolContext {
   commandRunCount: number;
   changeSnapshots: Map<string, FileSnapshot>;
   changeJournal: ChangeJournalEntry[];
+  adaptiveBudget: {
+    maxFileWrites: number;
+    maxCommandRuns: number;
+    expansionCount: number;
+    maxExpansions: number;
+  };
 }
 
 interface VerificationOutcome {
@@ -520,6 +535,12 @@ interface RunCheckpointRecord {
   commandsRun: string[];
   fileWriteCount: number;
   commandRunCount: number;
+  adaptiveBudget?: {
+    maxFileWrites: number;
+    maxCommandRuns: number;
+    expansionCount: number;
+    maxExpansions: number;
+  };
   verificationChecks: VerificationCheckResult[];
   preflightChecks: VerificationCheckResult[];
   preflightPassed: boolean | null;
@@ -627,6 +648,46 @@ function normalizeCheckpointIteration(
     return Math.max(0, iterationsUsed);
   }
   return Math.min(maxIterations, Math.max(0, iterationsUsed));
+}
+
+function isResumableCheckpointStatus(
+  status: AgentRunStatus | "in_progress"
+): boolean {
+  return RESUMABLE_CHECKPOINT_STATUSES.has(status);
+}
+
+function buildAdaptiveBudgetState(request: AgentRunRequest): ToolContext["adaptiveBudget"] {
+  return {
+    maxFileWrites: Math.max(1, request.maxFileWrites),
+    maxCommandRuns: Math.max(1, request.maxCommandRuns),
+    expansionCount: 0,
+    maxExpansions: MAX_ADAPTIVE_BUDGET_EXPANSIONS,
+  };
+}
+
+function expandAdaptiveBudget(
+  context: ToolContext,
+  kind: "file" | "command"
+): string | null {
+  const state = context.adaptiveBudget;
+  if (state.expansionCount >= state.maxExpansions) return null;
+
+  if (kind === "file") {
+    if (state.maxFileWrites >= MAX_ADAPTIVE_FILE_WRITES) return null;
+    const growth = Math.max(4, Math.ceil(state.maxFileWrites * 0.25));
+    const next = Math.min(MAX_ADAPTIVE_FILE_WRITES, state.maxFileWrites + growth);
+    if (next <= state.maxFileWrites) return null;
+    state.maxFileWrites = next;
+  } else {
+    if (state.maxCommandRuns >= MAX_ADAPTIVE_COMMAND_RUNS) return null;
+    const growth = Math.max(6, Math.ceil(state.maxCommandRuns * 0.25));
+    const next = Math.min(MAX_ADAPTIVE_COMMAND_RUNS, state.maxCommandRuns + growth);
+    if (next <= state.maxCommandRuns) return null;
+    state.maxCommandRuns = next;
+  }
+
+  state.expansionCount += 1;
+  return `Adaptive budget expanded (${state.expansionCount}/${state.maxExpansions}): maxFileWrites=${state.maxFileWrites}, maxCommandRuns=${state.maxCommandRuns}.`;
 }
 
 function truncate(text: string, maxChars: number): string {
@@ -1174,8 +1235,7 @@ async function findResumeCheckpoint(
     const checkpoint = await readJsonFile<RunCheckpointRecord>(checkpointPath);
     if (!checkpoint) return null;
     if (checkpoint.resumeKey !== resumeKey) return null;
-    if (checkpoint.status !== "in_progress") return null;
-    if (isStaleRunTimestamp(checkpoint.updatedAt)) return null;
+    if (!isResumableCheckpointStatus(checkpoint.status)) return null;
     return checkpoint;
   }
 
@@ -1188,7 +1248,7 @@ async function findResumeCheckpoint(
     const meta = await readJsonFile<RunCheckpointMeta>(metaPath);
     if (!meta) continue;
     if (meta.resumeKey !== resumeKey) continue;
-    if (meta.status !== "in_progress") continue;
+    if (!isResumableCheckpointStatus(meta.status)) continue;
     if (isStaleRunTimestamp(meta.updatedAt)) continue;
     candidates.push(meta);
   }
@@ -1200,7 +1260,7 @@ async function findResumeCheckpoint(
     const checkpointPath = path.join(rootDir, candidate.runId, "checkpoint.json");
     const checkpoint = await readJsonFile<RunCheckpointRecord>(checkpointPath);
     if (!checkpoint) continue;
-    if (checkpoint.status !== "in_progress") continue;
+    if (!isResumableCheckpointStatus(checkpoint.status)) continue;
     if (isStaleRunTimestamp(checkpoint.updatedAt)) continue;
     return checkpoint;
   }
@@ -2129,12 +2189,20 @@ async function toolWriteFile(
   context: ToolContext
 ): Promise<ToolResult> {
   const absolute = normalizePathForWorkspace(filePath, context.workspace);
+  const budgetNotice =
+    context.fileWriteCount >= context.adaptiveBudget.maxFileWrites
+      ? expandAdaptiveBudget(context, "file")
+      : null;
 
-  if (context.fileWriteCount >= context.request.maxFileWrites) {
+  if (context.fileWriteCount >= context.adaptiveBudget.maxFileWrites) {
     return {
       ok: false,
       summary: "File write budget exceeded",
-      output: `maxFileWrites=${context.request.maxFileWrites}`,
+      output: [
+        `effectiveMaxFileWrites=${context.adaptiveBudget.maxFileWrites}`,
+        `adaptiveExpansions=${context.adaptiveBudget.expansionCount}/${context.adaptiveBudget.maxExpansions}`,
+        `hardCeiling=${MAX_ADAPTIVE_FILE_WRITES}`,
+      ].join("\n"),
     };
   }
 
@@ -2155,7 +2223,7 @@ async function toolWriteFile(
     return {
       ok: true,
       summary: `[dry-run] Would write ${filePath}`,
-      output: changeSummary,
+      output: [budgetNotice, changeSummary].filter(Boolean).join("\n"),
     };
   }
 
@@ -2169,7 +2237,7 @@ async function toolWriteFile(
   return {
     ok: true,
     summary: `Wrote ${content.length} chars to ${filePath}`,
-    output: changeSummary,
+    output: [budgetNotice, changeSummary].filter(Boolean).join("\n"),
   };
 }
 
@@ -2179,12 +2247,20 @@ async function toolAppendFile(
   context: ToolContext
 ): Promise<ToolResult> {
   const absolute = normalizePathForWorkspace(filePath, context.workspace);
+  const budgetNotice =
+    context.fileWriteCount >= context.adaptiveBudget.maxFileWrites
+      ? expandAdaptiveBudget(context, "file")
+      : null;
 
-  if (context.fileWriteCount >= context.request.maxFileWrites) {
+  if (context.fileWriteCount >= context.adaptiveBudget.maxFileWrites) {
     return {
       ok: false,
       summary: "File write budget exceeded",
-      output: `maxFileWrites=${context.request.maxFileWrites}`,
+      output: [
+        `effectiveMaxFileWrites=${context.adaptiveBudget.maxFileWrites}`,
+        `adaptiveExpansions=${context.adaptiveBudget.expansionCount}/${context.adaptiveBudget.maxExpansions}`,
+        `hardCeiling=${MAX_ADAPTIVE_FILE_WRITES}`,
+      ].join("\n"),
     };
   }
 
@@ -2206,7 +2282,7 @@ async function toolAppendFile(
     return {
       ok: true,
       summary: `[dry-run] Would append to ${filePath}`,
-      output: changeSummary,
+      output: [budgetNotice, changeSummary].filter(Boolean).join("\n"),
     };
   }
 
@@ -2219,18 +2295,26 @@ async function toolAppendFile(
   return {
     ok: true,
     summary: `Appended ${content.length} chars to ${filePath}`,
-    output: changeSummary,
+    output: [budgetNotice, changeSummary].filter(Boolean).join("\n"),
   };
 }
 
 async function toolDeleteFile(filePath: string, context: ToolContext): Promise<ToolResult> {
   const absolute = normalizePathForWorkspace(filePath, context.workspace);
+  const budgetNotice =
+    context.fileWriteCount >= context.adaptiveBudget.maxFileWrites
+      ? expandAdaptiveBudget(context, "file")
+      : null;
 
-  if (context.fileWriteCount >= context.request.maxFileWrites) {
+  if (context.fileWriteCount >= context.adaptiveBudget.maxFileWrites) {
     return {
       ok: false,
       summary: "File write budget exceeded",
-      output: `maxFileWrites=${context.request.maxFileWrites}`,
+      output: [
+        `effectiveMaxFileWrites=${context.adaptiveBudget.maxFileWrites}`,
+        `adaptiveExpansions=${context.adaptiveBudget.expansionCount}/${context.adaptiveBudget.maxExpansions}`,
+        `hardCeiling=${MAX_ADAPTIVE_FILE_WRITES}`,
+      ].join("\n"),
     };
   }
 
@@ -2240,7 +2324,7 @@ async function toolDeleteFile(filePath: string, context: ToolContext): Promise<T
     return {
       ok: true,
       summary: `[dry-run] Would delete ${filePath}`,
-      output: "Deletion skipped in dry-run mode",
+      output: [budgetNotice, "Deletion skipped in dry-run mode"].filter(Boolean).join("\n"),
     };
   }
 
@@ -2265,7 +2349,7 @@ async function toolDeleteFile(filePath: string, context: ToolContext): Promise<T
   return {
     ok: true,
     summary: `Deleted ${filePath}`,
-    output: "File deleted",
+    output: [budgetNotice, "File deleted"].filter(Boolean).join("\n"),
   };
 }
 
@@ -2352,12 +2436,20 @@ async function runCommand(
   context: ToolContext
 ): Promise<ToolResult> {
   const normalized = normalizeCommand(command.program, command.args || [], command.cwd);
+  const budgetNotice =
+    context.commandRunCount >= context.adaptiveBudget.maxCommandRuns
+      ? expandAdaptiveBudget(context, "command")
+      : null;
 
-  if (context.commandRunCount >= context.request.maxCommandRuns) {
+  if (context.commandRunCount >= context.adaptiveBudget.maxCommandRuns) {
     return {
       ok: false,
       summary: "Command budget exceeded",
-      output: `maxCommandRuns=${context.request.maxCommandRuns}`,
+      output: [
+        `effectiveMaxCommandRuns=${context.adaptiveBudget.maxCommandRuns}`,
+        `adaptiveExpansions=${context.adaptiveBudget.expansionCount}/${context.adaptiveBudget.maxExpansions}`,
+        `hardCeiling=${MAX_ADAPTIVE_COMMAND_RUNS}`,
+      ].join("\n"),
     };
   }
 
@@ -2402,7 +2494,10 @@ async function runCommand(
     return {
       ok: true,
       summary: `Command succeeded: ${commandString}`,
-      output: truncate(output || "(no output)", RESPONSE_OUTPUT_LIMIT),
+      output: truncate(
+        [budgetNotice, output || "(no output)"].filter(Boolean).join("\n"),
+        RESPONSE_OUTPUT_LIMIT
+      ),
     };
   } catch (err) {
     const error = err as {
@@ -2416,7 +2511,9 @@ async function runCommand(
       return {
         ok: false,
         summary: `Command timed out: ${commandString}`,
-        output: `Command timed out after ${COMMAND_TIMEOUT_MS / 1000}s`,
+        output: [budgetNotice, `Command timed out after ${COMMAND_TIMEOUT_MS / 1000}s`]
+          .filter(Boolean)
+          .join("\n"),
       };
     }
 
@@ -2428,7 +2525,10 @@ async function runCommand(
     return {
       ok: false,
       summary: `Command failed: ${commandString}`,
-      output: truncate(output || "Command failed", RESPONSE_OUTPUT_LIMIT),
+      output: truncate(
+        [budgetNotice, output || "Command failed"].filter(Boolean).join("\n"),
+        RESPONSE_OUTPUT_LIMIT
+      ),
     };
   }
 }
@@ -2845,7 +2945,7 @@ function buildInitialMessage(
         ? "unbounded (0)"
         : request.maxIterations
     }`,
-    `Budgets: maxFileWrites=${request.maxFileWrites}, maxCommandRuns=${request.maxCommandRuns}`,
+    `Budgets: initial maxFileWrites=${request.maxFileWrites}, initial maxCommandRuns=${request.maxCommandRuns}, adaptive ceilings fileWrites<=${MAX_ADAPTIVE_FILE_WRITES}, commandRuns<=${MAX_ADAPTIVE_COMMAND_RUNS}`,
     `Strict verification: ${request.strictVerification}`,
     `Auto-fix verification failures: ${request.autoFixVerification}`,
     `Dry run: ${request.dryRun}`,
@@ -3001,7 +3101,7 @@ function buildToolFeedback(result: ToolResult, context: ToolContext): string {
     "output:",
     truncate(result.output, MODEL_OUTPUT_LIMIT),
     "",
-    `budget usage: fileWrites=${context.fileWriteCount}/${context.request.maxFileWrites}, commandRuns=${context.commandRunCount}/${context.request.maxCommandRuns}`,
+    `budget usage: fileWrites=${context.fileWriteCount}/${context.adaptiveBudget.maxFileWrites}, commandRuns=${context.commandRunCount}/${context.adaptiveBudget.maxCommandRuns}, adaptiveExpansions=${context.adaptiveBudget.expansionCount}/${context.adaptiveBudget.maxExpansions}`,
     "",
     "Choose the next action. If the task is complete and quality gates are expected to pass, use action.type='final'.",
   ].join("\n");
@@ -3432,6 +3532,7 @@ export async function runAutonomousAgent(
     commandRunCount: 0,
     changeSnapshots: new Map<string, FileSnapshot>(),
     changeJournal: [],
+    adaptiveBudget: buildAdaptiveBudgetState(effectiveRequest),
   };
 
   emit(hooks, {
@@ -3505,6 +3606,9 @@ export async function runAutonomousAgent(
       commandsRun,
       fileWriteCount: toolContext.fileWriteCount,
       commandRunCount: toolContext.commandRunCount,
+      adaptiveBudget: {
+        ...toolContext.adaptiveBudget,
+      },
       verificationChecks,
       preflightChecks,
       preflightPassed,
@@ -3694,6 +3798,7 @@ export async function runAutonomousAgent(
     const activeSkillsInstruction = buildActiveSkillsInstruction(activeSkillDocuments);
 
     if (resumeCheckpoint && Array.isArray(resumeCheckpoint.history) && resumeCheckpoint.history.length > 0) {
+      const resumedFromInProgress = resumeCheckpoint.status === "in_progress";
       history = resumeCheckpoint.history;
       compactionState = resumeCheckpoint.compaction || createInitialCompactionState();
       for (const filePath of resumeCheckpoint.changedFiles || []) {
@@ -3715,15 +3820,35 @@ export async function runAutonomousAgent(
       toolContext.fileWriteCount = resumeCheckpoint.fileWriteCount || 0;
       toolContext.commandRunCount = resumeCheckpoint.commandRunCount || 0;
       toolContext.changeJournal.push(...(resumeCheckpoint.changeJournal || []));
+      if (resumeCheckpoint.adaptiveBudget) {
+        toolContext.adaptiveBudget = {
+          maxFileWrites: Math.max(1, resumeCheckpoint.adaptiveBudget.maxFileWrites),
+          maxCommandRuns: Math.max(1, resumeCheckpoint.adaptiveBudget.maxCommandRuns),
+          expansionCount: Math.max(0, resumeCheckpoint.adaptiveBudget.expansionCount || 0),
+          maxExpansions:
+            typeof resumeCheckpoint.adaptiveBudget.maxExpansions === "number" &&
+            Number.isFinite(resumeCheckpoint.adaptiveBudget.maxExpansions) &&
+            resumeCheckpoint.adaptiveBudget.maxExpansions > 0
+              ? Math.floor(resumeCheckpoint.adaptiveBudget.maxExpansions)
+              : MAX_ADAPTIVE_BUDGET_EXPANSIONS,
+        };
+      }
       nextIteration = Math.max(
         1,
         (resumeCheckpoint.lastIteration || 0) + 1
       );
+      if (!resumedFromInProgress) {
+        finalSummary = "";
+        verification = [];
+        remainingWork = [];
+      }
 
       emit(hooks, {
         type: "status",
         data: {
-          message: `Resumed from previous checkpoint (${resumeCheckpoint.runId}) at iteration ${nextIteration}.`,
+          message: resumedFromInProgress
+            ? `Resumed from previous checkpoint (${resumeCheckpoint.runId}) at iteration ${nextIteration}.`
+            : `Recovery resume from prior ${resumeCheckpoint.status} run (${resumeCheckpoint.runId}) at iteration ${nextIteration}.`,
         },
       });
       await safeAppendEvent("resumed_from_checkpoint", {

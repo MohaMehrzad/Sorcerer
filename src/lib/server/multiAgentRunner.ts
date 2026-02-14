@@ -67,6 +67,9 @@ const FLAKY_TEST_MAX_RETRIES = 2;
 const LOW_CONFIDENCE_ESCALATION_THRESHOLD = 0.55;
 const CRITIC_REVIEW_ESCALATION_WINDOW = 0.08;
 const CRITIC_FLOOR_ON_FINAL_ATTEMPT = 0.45;
+const MAX_ADAPTIVE_BUDGET_EXPANSIONS = 18;
+const MAX_ADAPTIVE_FILE_WRITES = 480;
+const MAX_ADAPTIVE_COMMAND_RUNS = 720;
 
 const IGNORE = new Set([
   "node_modules",
@@ -373,6 +376,12 @@ interface MultiToolContext {
   commandRunCount: number;
   snapshots: Map<string, FileSnapshot>;
   changeJournal: ChangeJournalEntry[];
+  adaptiveBudget: {
+    maxFileWrites: number;
+    maxCommandRuns: number;
+    expansionCount: number;
+    maxExpansions: number;
+  };
 }
 
 interface VerificationRunResult {
@@ -710,6 +719,40 @@ function clampInteger(value: number, min: number, max: number): number {
 function clampFloat(value: number, min: number, max: number): number {
   if (!Number.isFinite(value)) return min;
   return Math.max(min, Math.min(max, value));
+}
+
+function buildAdaptiveBudgetState(request: AgentRunRequest): MultiToolContext["adaptiveBudget"] {
+  return {
+    maxFileWrites: Math.max(1, request.maxFileWrites),
+    maxCommandRuns: Math.max(1, request.maxCommandRuns),
+    expansionCount: 0,
+    maxExpansions: MAX_ADAPTIVE_BUDGET_EXPANSIONS,
+  };
+}
+
+function expandAdaptiveBudget(
+  context: MultiToolContext,
+  kind: "file" | "command"
+): string | null {
+  const state = context.adaptiveBudget;
+  if (state.expansionCount >= state.maxExpansions) return null;
+
+  if (kind === "file") {
+    if (state.maxFileWrites >= MAX_ADAPTIVE_FILE_WRITES) return null;
+    const growth = Math.max(6, Math.ceil(state.maxFileWrites * 0.25));
+    const next = Math.min(MAX_ADAPTIVE_FILE_WRITES, state.maxFileWrites + growth);
+    if (next <= state.maxFileWrites) return null;
+    state.maxFileWrites = next;
+  } else {
+    if (state.maxCommandRuns >= MAX_ADAPTIVE_COMMAND_RUNS) return null;
+    const growth = Math.max(8, Math.ceil(state.maxCommandRuns * 0.25));
+    const next = Math.min(MAX_ADAPTIVE_COMMAND_RUNS, state.maxCommandRuns + growth);
+    if (next <= state.maxCommandRuns) return null;
+    state.maxCommandRuns = next;
+  }
+
+  state.expansionCount += 1;
+  return `Adaptive budget expanded (${state.expansionCount}/${state.maxExpansions}): maxFileWrites=${state.maxFileWrites}, maxCommandRuns=${state.maxCommandRuns}.`;
 }
 
 function isUnboundedIterationMode(maxIterations: number): boolean {
@@ -1225,10 +1268,19 @@ async function runCommand(
     };
   }
 
-  if (context.commandRunCount >= context.request.maxCommandRuns) {
+  const budgetNotice =
+    context.commandRunCount >= context.adaptiveBudget.maxCommandRuns
+      ? expandAdaptiveBudget(context, "command")
+      : null;
+
+  if (context.commandRunCount >= context.adaptiveBudget.maxCommandRuns) {
     return {
       ok: false,
-      output: `maxCommandRuns=${context.request.maxCommandRuns}`,
+      output: [
+        `effectiveMaxCommandRuns=${context.adaptiveBudget.maxCommandRuns}`,
+        `adaptiveExpansions=${context.adaptiveBudget.expansionCount}/${context.adaptiveBudget.maxExpansions}`,
+        `hardCeiling=${MAX_ADAPTIVE_COMMAND_RUNS}`,
+      ].join("\n"),
       summary: "Command budget exceeded",
       durationMs: 0,
     };
@@ -1275,7 +1327,10 @@ async function runCommand(
     return {
       ok: true,
       summary: `Command succeeded: ${commandString}`,
-      output: truncate(output || "(no output)", RESPONSE_OUTPUT_LIMIT),
+      output: truncate(
+        [budgetNotice, output || "(no output)"].filter(Boolean).join("\n"),
+        RESPONSE_OUTPUT_LIMIT
+      ),
       durationMs: Date.now() - startedAt,
     };
   } catch (err) {
@@ -1289,7 +1344,9 @@ async function runCommand(
       return {
         ok: false,
         summary: `Command timed out: ${commandString}`,
-        output: `Command timed out after ${COMMAND_TIMEOUT_MS / 1000}s`,
+        output: [budgetNotice, `Command timed out after ${COMMAND_TIMEOUT_MS / 1000}s`]
+          .filter(Boolean)
+          .join("\n"),
         durationMs: Date.now() - startedAt,
       };
     }
@@ -1300,7 +1357,10 @@ async function runCommand(
     return {
       ok: false,
       summary: `Command failed: ${commandString}`,
-      output: truncate(output || "Command failed", RESPONSE_OUTPUT_LIMIT),
+      output: truncate(
+        [budgetNotice, output || "Command failed"].filter(Boolean).join("\n"),
+        RESPONSE_OUTPUT_LIMIT
+      ),
       durationMs: Date.now() - startedAt,
     };
   }
@@ -1446,11 +1506,20 @@ async function applyChange(
     };
   }
 
-  if (context.fileWriteCount >= context.request.maxFileWrites) {
+  const budgetNotice =
+    context.fileWriteCount >= context.adaptiveBudget.maxFileWrites
+      ? expandAdaptiveBudget(context, "file")
+      : null;
+
+  if (context.fileWriteCount >= context.adaptiveBudget.maxFileWrites) {
     return {
       ok: false,
       summary: "File write budget exceeded",
-      output: `maxFileWrites=${context.request.maxFileWrites}`,
+      output: [
+        `effectiveMaxFileWrites=${context.adaptiveBudget.maxFileWrites}`,
+        `adaptiveExpansions=${context.adaptiveBudget.expansionCount}/${context.adaptiveBudget.maxExpansions}`,
+        `hardCeiling=${MAX_ADAPTIVE_FILE_WRITES}`,
+      ].join("\n"),
       action: { type: "final", summary: "file write budget exceeded" },
     };
   }
@@ -1483,7 +1552,7 @@ async function applyChange(
       return {
         ok: true,
         summary: `[dry-run] Would delete ${relativePath}`,
-        output: "Deletion skipped in dry-run mode",
+        output: [budgetNotice, "Deletion skipped in dry-run mode"].filter(Boolean).join("\n"),
         action,
       };
     }
@@ -1509,7 +1578,7 @@ async function applyChange(
     return {
       ok: true,
       summary: `Deleted ${relativePath}`,
-      output: "File deleted",
+      output: [budgetNotice, "File deleted"].filter(Boolean).join("\n"),
       action,
     };
   }
@@ -1572,7 +1641,7 @@ async function applyChange(
       return {
         ok: true,
         summary: `[dry-run] Would patch ${relativePath} (${change.hunks.length} hunks)`,
-        output: patched.summary,
+        output: [budgetNotice, patched.summary].filter(Boolean).join("\n"),
         action,
       };
     }
@@ -1589,7 +1658,7 @@ async function applyChange(
     return {
       ok: true,
       summary: `Patched ${relativePath} (${change.hunks.length} hunks)`,
-      output: patched.summary,
+      output: [budgetNotice, patched.summary].filter(Boolean).join("\n"),
       action,
     };
   }
@@ -1624,7 +1693,7 @@ async function applyChange(
       return {
         ok: true,
         summary: `[dry-run] Would write ${relativePath}`,
-        output: `chars=${change.content.length}`,
+        output: [budgetNotice, `chars=${change.content.length}`].filter(Boolean).join("\n"),
         action,
       };
     }
@@ -1637,7 +1706,7 @@ async function applyChange(
     return {
       ok: true,
       summary: `Wrote ${change.content.length} chars to ${relativePath}`,
-      output: change.rationale || "File written",
+      output: [budgetNotice, change.rationale || "File written"].filter(Boolean).join("\n"),
       action,
     };
   }
@@ -1664,7 +1733,7 @@ async function applyChange(
     return {
       ok: true,
       summary: `[dry-run] Would append to ${relativePath}`,
-      output: `chars=${change.content.length}`,
+      output: [budgetNotice, `chars=${change.content.length}`].filter(Boolean).join("\n"),
       action,
     };
   }
@@ -1677,7 +1746,7 @@ async function applyChange(
   return {
     ok: true,
     summary: `Appended ${change.content.length} chars to ${relativePath}`,
-    output: change.rationale || "File appended",
+    output: [budgetNotice, change.rationale || "File appended"].filter(Boolean).join("\n"),
     action,
   };
 }
@@ -2932,6 +3001,7 @@ export async function runMultiAgentAutonomous(
       commandRunCount: 0,
       snapshots: new Map<string, FileSnapshot>(),
       changeJournal: [],
+      adaptiveBudget: buildAdaptiveBudgetState(request),
     };
 
     const clarificationResult = buildCompletionResult({
@@ -2998,6 +3068,7 @@ export async function runMultiAgentAutonomous(
     commandRunCount: 0,
     snapshots: new Map<string, FileSnapshot>(),
     changeJournal: [],
+    adaptiveBudget: buildAdaptiveBudgetState(request),
   };
 
   const steps: AgentStep[] = [];

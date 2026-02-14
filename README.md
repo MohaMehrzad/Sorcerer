@@ -132,6 +132,9 @@ Live run output includes:
 - Low-confidence coder outputs and borderline critic scores trigger escalation passes automatically.
 - Deterministic `patch_file` hunks use conflict-safe oldText/newText matching before writes.
 - Verification supports flaky test retries and quarantine tracking.
+- Adaptive file/command budgets expand automatically during productive runs up to hard safety ceilings.
+- Supervisor mode automatically retries/re-resumes failed or incomplete runs (including completion-contract failures) without manual reruns.
+- Completion contract checks validate goal criteria evidence before accepting a run as complete.
 - Safety policies deny sensitive write paths (`.git`, `.env*`, key/cert/secret paths).
 - Observability includes model usage, retries/cache hits/escalations, unit timings, and failure heatmap.
 - Single-agent and multi-agent runs both write continuation packets + long-term memory entries for cross-window resume.
