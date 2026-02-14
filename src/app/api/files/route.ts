@@ -68,15 +68,7 @@ async function buildTree(
 ): Promise<TreeNode[]> {
   if (depth >= maxDepth) return [];
 
-  const resolvedRoot = path.resolve(relativeTo);
-  const safeDirPath = path.resolve(dirPath);
-  if (safeDirPath !== resolvedRoot && !safeDirPath.startsWith(`${resolvedRoot}${path.sep}`)) {
-    throw new FileRouteError(
-      `Path is outside workspace: ${toWorkspaceRelativePath(safeDirPath, resolvedRoot)}`,
-      403
-    );
-  }
-  const entries = await readdir(safeDirPath, { withFileTypes: true });
+  const entries = await readdir(dirPath, { withFileTypes: true });
   const nodes: TreeNode[] = [];
 
   const sorted = entries.sort((a, b) => {
@@ -89,11 +81,8 @@ async function buildTree(
   for (const entry of sorted) {
     if (IGNORE.has(entry.name) || entry.name.startsWith(".")) continue;
 
-    const fullPath = path.resolve(safeDirPath, entry.name);
-    if (fullPath !== resolvedRoot && !fullPath.startsWith(`${resolvedRoot}${path.sep}`)) {
-      continue;
-    }
-    const relPath = toWorkspaceRelativePath(fullPath, relativeTo);
+    const fullPath = path.join(dirPath, entry.name);
+    const relPath = path.relative(relativeTo, fullPath);
 
     if (entry.isDirectory()) {
       const children = await buildTree(fullPath, relativeTo, depth + 1, maxDepth);
@@ -228,19 +217,8 @@ export async function POST(req: NextRequest) {
 
         const filePath = normalizePathForWorkspace(body.path, workspace);
         assertAllowedFileRoutePath(filePath, workspace, "read");
-        const resolvedWorkspace = path.resolve(workspace);
-        const safePath = path.resolve(filePath);
-        if (
-          safePath !== resolvedWorkspace &&
-          !safePath.startsWith(`${resolvedWorkspace}${path.sep}`)
-        ) {
-          throw new FileRouteError(
-            `Path is outside workspace: ${toWorkspaceRelativePath(safePath, resolvedWorkspace)}`,
-            403
-          );
-        }
 
-        const ext = path.extname(safePath).toLowerCase();
+        const ext = path.extname(filePath).toLowerCase();
         if (BINARY_EXTENSIONS.has(ext)) {
           return NextResponse.json(
             {
@@ -251,8 +229,8 @@ export async function POST(req: NextRequest) {
           );
         }
 
-        const content = await readFile(safePath, "utf-8");
-        const fileStat = await stat(safePath);
+        const content = await readFile(filePath, "utf-8");
+        const fileStat = await stat(filePath);
         return NextResponse.json(
           {
             content,
@@ -274,21 +252,10 @@ export async function POST(req: NextRequest) {
 
         const filePath = normalizePathForWorkspace(body.path, workspace);
         assertAllowedFileRoutePath(filePath, workspace, "write");
-        const resolvedWorkspace = path.resolve(workspace);
-        const safePath = path.resolve(filePath);
-        if (
-          safePath !== resolvedWorkspace &&
-          !safePath.startsWith(`${resolvedWorkspace}${path.sep}`)
-        ) {
-          throw new FileRouteError(
-            `Path is outside workspace: ${toWorkspaceRelativePath(safePath, resolvedWorkspace)}`,
-            403
-          );
-        }
 
         // Create parent directories if needed
-        await mkdir(path.dirname(safePath), { recursive: true });
-        await writeFile(safePath, body.content, "utf-8");
+        await mkdir(path.dirname(filePath), { recursive: true });
+        await writeFile(filePath, body.content, "utf-8");
 
         return NextResponse.json(
           {
@@ -312,18 +279,10 @@ export async function POST(req: NextRequest) {
           "README.md",
           "CLAUDE.md",
         ];
-        const resolvedWorkspace = path.resolve(workspace);
         const configs: Record<string, string> = {};
         for (const f of configFiles) {
           try {
-            const configPath = path.resolve(resolvedWorkspace, f);
-            if (
-              configPath !== resolvedWorkspace &&
-              !configPath.startsWith(`${resolvedWorkspace}${path.sep}`)
-            ) {
-              continue;
-            }
-            const content = await readFile(configPath, "utf-8");
+            const content = await readFile(path.join(workspace, f), "utf-8");
             configs[f] = content.slice(0, 2000); // Cap at 2KB each
           } catch {
             // File doesn't exist, skip
