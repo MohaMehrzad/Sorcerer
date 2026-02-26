@@ -2,7 +2,6 @@ import { execFile } from "child_process";
 import { promisify } from "util";
 import { readFile } from "fs/promises";
 import path from "path";
-import { normalizePathForWorkspace } from "@/lib/server/workspace";
 
 const execFileAsync = promisify(execFile);
 
@@ -70,7 +69,6 @@ async function listFiles(options: ListFilesOptions): Promise<string[]> {
       .filter(Boolean)
       .map((absolutePath) => path.relative(options.workspace, absolutePath))
       .filter(Boolean)
-      .filter((file) => !file.startsWith("..") && !path.isAbsolute(file))
       .filter((file) => {
         if (file.startsWith("node_modules/")) return false;
         if (file.startsWith(".next/")) return false;
@@ -131,8 +129,7 @@ async function computeHotspots(
     }
 
     try {
-      const safePath = normalizePathForWorkspace(file, workspace);
-      const content = await readFile(safePath, "utf-8");
+      const content = await readFile(path.join(workspace, file), "utf-8");
       const lines = content.split("\n").length;
       hotspots.push({ path: file, lines });
     } catch {
@@ -162,8 +159,7 @@ async function buildModuleEdges(
 
   for (const file of truncateArray(codeFiles, 260)) {
     try {
-      const safePath = normalizePathForWorkspace(file, workspace);
-      const content = await readFile(safePath, "utf-8");
+      const content = await readFile(path.join(workspace, file), "utf-8");
 
       const importRegex = /from\s+["']([^"']+)["']/g;
       const requireRegex = /require\(\s*["']([^"']+)["']\s*\)/g;
@@ -233,14 +229,8 @@ async function countPatternMatches(
         const match = line.match(/^(.*?):(\d+):(.*)$/);
         if (!match) return line;
         const [, filePath, lineNumber, rest] = match;
-        const relativePath = path.relative(workspace, path.resolve(filePath));
-        if (!relativePath || relativePath.startsWith("..") || path.isAbsolute(relativePath)) {
-          return null;
-        }
-        const safePath = normalizePathForWorkspace(relativePath, workspace);
-        return `${path.relative(workspace, safePath)}:${lineNumber}: ${rest.trim()}`;
-      })
-      .filter((line): line is string => Boolean(line));
+        return `${path.relative(workspace, filePath)}:${lineNumber}: ${rest.trim()}`;
+      });
   } catch {
     return [];
   }
@@ -299,8 +289,7 @@ export async function collectProjectIntelligence(
 
   let packageScripts: string[] = [];
   try {
-    const packageJsonPath = normalizePathForWorkspace("package.json", workspace);
-    const raw = await readFile(packageJsonPath, "utf-8");
+    const raw = await readFile(path.join(workspace, "package.json"), "utf-8");
     const parsed = JSON.parse(raw) as { scripts?: Record<string, string> };
     packageScripts = Object.keys(parsed.scripts || {}).sort();
   } catch {

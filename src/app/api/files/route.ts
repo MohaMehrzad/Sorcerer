@@ -2,7 +2,6 @@ import { NextRequest, NextResponse } from "next/server";
 import { readdir, readFile, writeFile, mkdir, stat } from "fs/promises";
 import path from "path";
 import {
-  assertPathWithinWorkspace,
   normalizePathForWorkspace,
   resolveWorkspacePath,
   statusFromWorkspaceError,
@@ -64,8 +63,7 @@ async function buildTree(
 ): Promise<TreeNode[]> {
   if (depth >= maxDepth) return [];
 
-  const safeDirPath = assertPathWithinWorkspace(dirPath, relativeTo);
-  const entries = await readdir(safeDirPath, { withFileTypes: true });
+  const entries = await readdir(dirPath, { withFileTypes: true });
   const nodes: TreeNode[] = [];
 
   const sorted = entries.sort((a, b) => {
@@ -78,8 +76,8 @@ async function buildTree(
   for (const entry of sorted) {
     if (IGNORE.has(entry.name) || entry.name.startsWith(".")) continue;
 
-    const fullPath = assertPathWithinWorkspace(path.join(safeDirPath, entry.name), relativeTo);
-    const relPath = toWorkspaceRelativePath(fullPath, relativeTo);
+    const fullPath = path.join(dirPath, entry.name);
+    const relPath = path.relative(relativeTo, fullPath);
 
     if (entry.isDirectory()) {
       const children = await buildTree(fullPath, relativeTo, depth + 1, maxDepth);
@@ -212,9 +210,8 @@ export async function POST(req: NextRequest) {
 
         const filePath = normalizePathForWorkspace(body.path, workspace);
         assertAllowedFileRoutePath(filePath, workspace, "read");
-        const safePath = assertPathWithinWorkspace(filePath, workspace);
 
-        const ext = path.extname(safePath).toLowerCase();
+        const ext = path.extname(filePath).toLowerCase();
         if (BINARY_EXTENSIONS.has(ext)) {
           return NextResponse.json(
             {
@@ -225,8 +222,8 @@ export async function POST(req: NextRequest) {
           );
         }
 
-        const content = await readFile(safePath, "utf-8");
-        const fileStat = await stat(safePath);
+        const content = await readFile(filePath, "utf-8");
+        const fileStat = await stat(filePath);
         return NextResponse.json(
           {
             content,
@@ -248,11 +245,10 @@ export async function POST(req: NextRequest) {
 
         const filePath = normalizePathForWorkspace(body.path, workspace);
         assertAllowedFileRoutePath(filePath, workspace, "write");
-        const safePath = assertPathWithinWorkspace(filePath, workspace);
 
         // Create parent directories if needed
-        await mkdir(path.dirname(safePath), { recursive: true });
-        await writeFile(safePath, body.content, "utf-8");
+        await mkdir(path.dirname(filePath), { recursive: true });
+        await writeFile(filePath, body.content, "utf-8");
 
         return NextResponse.json(
           {
@@ -279,8 +275,7 @@ export async function POST(req: NextRequest) {
         const configs: Record<string, string> = {};
         for (const f of configFiles) {
           try {
-            const configPath = normalizePathForWorkspace(f, workspace);
-            const content = await readFile(configPath, "utf-8");
+            const content = await readFile(path.join(workspace, f), "utf-8");
             configs[f] = content.slice(0, 2000); // Cap at 2KB each
           } catch {
             // File doesn't exist, skip

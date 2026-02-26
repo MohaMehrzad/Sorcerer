@@ -4,16 +4,26 @@ set -euo pipefail
 OWNER="${1:-MohaMehrzad}"
 REPO="${2:-Sorcerer}"
 SOURCE_DIR="${3:-docs/wiki}"
-WIKI_URL="https://github.com/${OWNER}/${REPO}.wiki.git"
+WIKI_SYNC_REQUIRE_REMOTE="${WIKI_SYNC_REQUIRE_REMOTE:-true}"
+WIKI_URL_BASE="https://github.com/${OWNER}/${REPO}.wiki.git"
+
+if [[ -n "${GITHUB_TOKEN:-}" ]]; then
+  WIKI_URL="https://x-access-token:${GITHUB_TOKEN}@github.com/${OWNER}/${REPO}.wiki.git"
+else
+  WIKI_URL="${WIKI_URL_BASE}"
+fi
 
 if [[ ! -d "${SOURCE_DIR}" ]]; then
   echo "Source directory not found: ${SOURCE_DIR}" >&2
   exit 1
 fi
 
-if ! git ls-remote "${WIKI_URL}" >/dev/null 2>&1; then
+if ! git ls-remote "${WIKI_URL_BASE}" >/dev/null 2>&1; then
   echo "Wiki repository does not exist yet. Create the first wiki page in GitHub UI, then rerun." >&2
-  exit 1
+  if [[ "${WIKI_SYNC_REQUIRE_REMOTE}" == "true" ]]; then
+    exit 1
+  fi
+  exit 0
 fi
 
 tmp_dir="$(mktemp -d)"
